@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import orderController from '../controllers/order.controller';
 import { authenticate } from '../middleware/auth';
+import { requireModulePermission } from '../middleware/requirePermission';
 import { validate } from '../middleware/validation';
 import {
   createOrderSchema,
@@ -9,6 +10,7 @@ import {
 } from '../validators/order.validator';
 
 const router = Router();
+const requireOrders = requireModulePermission('orders');
 
 // ========== POS 专用端点（不需要认证）==========
 // 本地 POS 系统通过 Kotlin 服务调用，无需认证
@@ -16,28 +18,32 @@ const router = Router();
 router.post('/pos', validate(createOrderSchema), orderController.createOrderFromPOS);
 
 // ========== 标准 REST 端点 ==========
-router.post('/', authenticate, validate(createOrderSchema), orderController.createOrder);
-router.get('/', authenticate, orderController.getOrders);
-router.get('/:orderId', authenticate, orderController.getOrderById);
+router.post('/', authenticate, requireOrders, validate(createOrderSchema), orderController.createOrder);
+router.get('/', authenticate, requireOrders, orderController.getOrders);
+router.get('/:orderId', authenticate, requireOrders, orderController.getOrderById);
 router.patch(
   '/:orderId/status',
   authenticate,
+  requireOrders,
   validate(updateOrderStatusSchema),
   orderController.updateOrderStatus
 );
 router.get(
   '/:orderId/status-history',
   authenticate,
+  requireOrders,
   orderController.getOrderStatusHistory
 );
 router.post(
   '/batch-status',
   authenticate,
+  requireOrders,
   orderController.batchUpdateStatus
 );
 router.post(
   '/:orderId/cancel',
   authenticate,
+  requireOrders,
   validate(cancelOrderSchema),
   orderController.cancelOrder
 );
@@ -46,6 +52,7 @@ router.post(
 router.post(
   '/items/:orderItemId/ready',
   authenticate,
+  requireOrders,
   orderController.markItemReady
 );
 

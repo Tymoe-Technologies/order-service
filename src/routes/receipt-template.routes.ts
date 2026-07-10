@@ -2,9 +2,11 @@ import express from 'express';
 import { ReceiptTemplateController } from '../controllers/receipt-template.controller';
 import { uploadSingleLogo } from '../middleware/upload';
 import { authenticate } from '../middleware/auth';
+import { requireModulePermission } from '../middleware/requirePermission';
 
 const router = express.Router();
 const receiptTemplateController = new ReceiptTemplateController();
+const requirePrintSettings = requireModulePermission('printSettings');
 
 /**
  * 票据模板路由
@@ -19,13 +21,13 @@ const receiptTemplateController = new ReceiptTemplateController();
  * GET /receipt-templates
  * 获取所有票据模板
  */
-router.get('/', authenticate, (req, res) => receiptTemplateController.getTemplates(req, res));
+router.get('/', authenticate, requirePrintSettings, (req, res) => receiptTemplateController.getTemplates(req, res));
 
 /**
  * GET /receipt-templates/:id
  * 获取单个票据模板
  */
-router.get('/:id', authenticate, (req, res) => receiptTemplateController.getTemplateById(req, res));
+router.get('/:id', authenticate, requirePrintSettings, (req, res) => receiptTemplateController.getTemplateById(req, res));
 
 // ====================================
 // 票据模板 Logo 管理路由
@@ -42,12 +44,12 @@ router.get('/:id', authenticate, (req, res) => receiptTemplateController.getTemp
  * 支持格式: JPG, PNG, WebP
  * 最大文件大小: 5MB
  */
-router.post('/:id/logo', authenticate, uploadSingleLogo, (req, res) => receiptTemplateController.uploadLogo(req, res));
+router.post('/:id/logo', authenticate, requirePrintSettings, uploadSingleLogo, (req, res) => receiptTemplateController.uploadLogo(req, res));
 
 /**
  * DELETE /receipt-templates/:id/logo
  * 删除票据模板 logo
  */
-router.delete('/:id/logo', authenticate, (req, res) => receiptTemplateController.deleteLogo(req, res));
+router.delete('/:id/logo', authenticate, requirePrintSettings, (req, res) => receiptTemplateController.deleteLogo(req, res));
 
 export default router;
