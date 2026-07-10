@@ -1,0 +1,654 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../../node_modules/.prisma/client-order"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("ORDER_DATABASE_URL")
+}
+
+model Order {
+  id             String        @id @default(uuid()) @db.Uuid
+  tenantId       String        @map("tenant_id") @db.Uuid
+  orderNumber    String        @unique @map("order_number") @db.VarChar(50)
+  pickupNumber   Int?          @map("pickup_number")                        // 当日取餐号（1-9999，每天重置，门店内唯一）
+  messageId      String?       @unique @map("message_id") @db.VarChar(255)
+  // 用户关联（可选，POS/匿名订单为空）
+  consumerId     String?       @map("consumer_id") @db.Uuid
+
+  // 下单时联系信息快照（不随用户改资料而变）
+  customerName   String?       @map("customer_name") @db.VarChar(255)
+  customerPhone  String?       @map("customer_phone") @db.VarChar(50)
+  customerEmail  String?       @map("customer_email") @db.VarChar(255)
+  orderType      OrderType     @default(DINE_IN) @map("order_type")
+  status         OrderStatus   @default(PENDING)
+  tableNumber    String?       @map("table_number") @db.VarChar(50)
+  
+  // 金额明细（单位：分 cents）
+  subtotal       Int           @default(0)
+  taxAmount      Int           @default(0) @map("tax_amount")
+  discountAmount Int           @default(0) @map("discount_amount")
+  serviceFee     Int           @default(0) @map("service_fee")
+  deliveryFee    Int           @default(0) @map("delivery_fee")         // 向顾客收取的配送费（分）
+  uberDeliveryFee Int          @default(0) @map("uber_delivery_fee")  // Uber 实际配送成本（分）
+  platformFee    Int           @default(0) @map("platform_fee")
+  tipAmount      Int           @default(0) @map("tip_amount")
+  totalAmount    Int           @map("total_amount")
+  
+  // 折扣明细
+  discountType   String?       @map("discount_type") @db.VarChar(50)
+  discountCode   String?       @map("discount_code") @db.VarChar(100)
+  discountReason String?       @map("discount_reason") @db.VarChar(255)
+  
+  // 支付信息
+  paymentStatus  PaymentStatus @default(UNPAID) @map("payment_status")
+  paymentMethod  String?       @map("payment_method") @db.VarChar(50)
+  paidAt         DateTime?     @map("paid_at")
+  transactionId  String?       @map("transaction_id") @db.VarChar(255)
+  
+  cashierId              String? @map("cashier_id") @db.Uuid               // 收银员 Account.id
+  cashierName            String? @map("cashier_name") @db.VarChar(100)     // 收银员姓名快照（收据展示用，Account 改名不影响老订单）
+  cashierEmployeeNumber  String? @map("cashier_employee_number") @db.VarChar(50) // 收银员工号快照（审计/兜底显示）
+
+  // 对账信息
+  settlementStatus String?     @default("PENDING") @map("settlement_status") @db.VarChar(50)
+  settledAt        DateTime?   @map("settled_at")
+  settlementBatch  String?     @map("settlement_batch") @db.VarChar(100)
+
+  // Stripe 支付集成（用于幂等性和订单追踪）
+  paymentIntentId  String?     @unique @map("payment_intent_id") @db.VarChar(255)
+
+  // 预约自取
+  isScheduled    Boolean   @default(false) @map("is_scheduled")  // 是否为预约订单
+  scheduledAt    DateTime? @map("scheduled_at")                   // 顾客预约的取餐时间
+  releasedAt     DateTime? @map("released_at")                    // 系统实际释放（转 PENDING）的时间
+
+  notes          String?
+  customLabelData Json?  @map("custom_label_data") @db.Json  // 顾客自定义标签数据（WEB 订单）
+  deliveryAddress Json?  @map("delivery_address") @db.Json   // 配送地址（DELIVERY 类型时）
+  deliveryConfirmedAt DateTime? @map("delivery_confirmed_at")  // POS 确认备餐时间并创建 Uber 配送单的时间（null = 待确认）
+
+  // 第三方平台订单（Uber Eats 等）
+  externalOrderId   String?  @map("external_order_id") @db.VarChar(255)  // 第三方平台订单 ID
+  externalDisplayId String?  @map("external_display_id") @db.VarChar(50) // 平台展示 ID（如 Uber 的 "44BCD"）
+  externalPlatform  String?  @map("external_platform") @db.VarChar(50)   // "UBER_EATS"
+
+  // 渠道配置关联（记录下单时使用的渠道，用于报表和记账）
+  channelConfigId String?      @map("channel_config_id") @db.Uuid
+  channelName     String?      @map("channel_name") @db.VarChar(255)
+  // 渠道折扣金额（分，由渠道规则自动计算，独立于会员/优惠券折扣）
+  channelDiscountAmount Int    @default(0) @map("channel_discount_amount")
+  // finance-service 结清该笔记账订单时回填，用于额度恢复计算
+  creditSettledAt DateTime?    @map("credit_settled_at")
+
+  // 会员关联（可选，匿名订单不设置）
+  memberId       String?       @map("member_id") @db.Uuid
+
+  createdBy      String        @map("created_by") @db.Uuid
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+  orderSource    OrderSource   @default(POS) @map("order_source")
+  
+  // 状态时间戳（用于统计和追踪）
+  scheduledConfirmedAt DateTime? @map("scheduled_confirmed_at") // 预约单被释放/转 PENDING 的时间
+  confirmedAt    DateTime?     @map("confirmed_at")
+  preparingAt    DateTime?     @map("preparing_at")
+  readyAt        DateTime?     @map("ready_at")
+  pickedUpAt     DateTime?     @map("picked_up_at")
+  deliveredAt    DateTime?     @map("delivered_at")
+  completedAt    DateTime?     @map("completed_at")
+  cancelledAt    DateTime?     @map("cancelled_at")
+  cancellationReason CancellationReason? @map("cancellation_reason")
+
+  orderItems     OrderItem[]
+  orderNotes     OrderNote[]
+  printRecords   PrintRecord[]
+  printTasks     PrintTask[]
+  statusHistory  OrderStatusHistory[]
+  analytics      OrderAnalytics?
+
+  @@index([tenantId, createdAt])
+  @@index([orderNumber])
+  @@index([tenantId, pickupNumber])  // 门店内按取餐号快速搜索
+  @@index([messageId])
+  @@index([orderSource])
+  @@index([paymentStatus])
+  @@index([externalOrderId])
+  @@index([externalPlatform, tenantId])
+  @@index([settlementStatus])
+  @@index([memberId])
+  @@index([consumerId])              // "我的订单"查询
+  @@index([channelConfigId])         // 渠道报表查询
+  @@index([isScheduled, scheduledAt]) // 预约订单定时释放查询
+  @@map("orders")
+}
+
+model OrderItem {
+  id             String  @id @default(uuid()) @db.Uuid
+  orderId        String  @map("order_id") @db.Uuid
+  itemId         String  @map("item_id") @db.Uuid
+  itemName       String  @map("item_name") @db.VarChar(255)
+  quantity       Int
+  unitPrice      Int     @map("unit_price")    // 单价（分 cents）
+  totalPrice     Int     @map("total_price")   // 总价（分 cents）
+  
+  // 商品级别折扣（单位：分 cents）
+  discountAmount Int     @default(0) @map("discount_amount")
+  discountType   String?  @map("discount_type") @db.VarChar(20)  // PERCENTAGE, FIXED
+  discountValue  Decimal? @map("discount_value") @db.Decimal(10, 2)
+  discountReason String?  @map("discount_reason") @db.VarChar(100)
+  
+  attributes     Json?    @db.Json
+  modifiers      Json?    @db.Json  // 旧格式（保留兼容，新订单不再写入）
+  specialNotes   String?  @map("special_notes")
+  order          Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderItemModifiers OrderItemModifier[]
+
+  @@map("order_items")
+}
+
+// 订单项修饰符（关系表，替代 JSON 字段用于数据分析）
+model OrderItemModifier {
+  id                String    @id @default(uuid()) @db.Uuid
+  orderItemId       String    @map("order_item_id") @db.Uuid
+  modifierGroupId   String    @map("modifier_group_id") @db.Uuid    // 引用 item-management 的 modifier_groups
+  modifierOptionId  String    @map("modifier_option_id") @db.Uuid   // 引用 item-management 的 modifier_options
+  groupName         String    @map("group_name") @db.VarChar(255)   // 下单时的组名快照
+  optionName        String    @map("option_name") @db.VarChar(255)  // 下单时的选项名快照
+  optionCode        String?   @map("option_code") @db.VarChar(255)  // 打印代码（如 "P", "2*LS" 等）
+  unitPrice         Int       @map("unit_price")                     // 价格快照（分）
+  quantity          Int       @default(1)
+
+  orderItem         OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+
+  @@index([orderItemId])
+  @@index([modifierOptionId])
+  @@index([modifierGroupId])
+  @@map("order_item_modifiers")
+}
+
+model OrderNote {
+  id        String   @id @default(uuid()) @db.Uuid
+  orderId   String   @map("order_id") @db.Uuid
+  noteType  NoteType @default(GENERAL) @map("note_type")
+  content   String
+  color     String?  @db.VarChar(20)
+  isPinned  Boolean  @default(false) @map("is_pinned")
+  createdBy String   @map("created_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@map("order_notes")
+}
+
+model PrintRecord {
+  id          String      @id @default(uuid()) @db.Uuid
+  orderId     String      @map("order_id") @db.Uuid
+  printType   PrintType   @map("print_type")
+  printerName String?     @map("printer_name") @db.VarChar(255)
+  printedBy   String?     @map("printed_by") @db.Uuid  // 可空：系统自动打印无用户
+  printedAt   DateTime    @default(now()) @map("printed_at")
+  status      PrintStatus @default(SUCCESS)
+  order       Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@map("print_records")
+}
+
+model NoteTemplate {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  name      String   @db.VarChar(255)
+  content   String
+  color     String?  @db.VarChar(20)
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("note_templates")
+}
+
+model OrderSourceConfig {
+  id              String            @id @default(uuid()) @db.Uuid
+  tenantId        String            @map("tenant_id") @db.Uuid
+  sourceType      String            @map("source_type") @db.VarChar(50)
+  sourceName      String            @map("source_name") @db.VarChar(255)
+  description     String?
+  isActive        Boolean           @default(true) @map("is_active")
+  displayOrder    Int               @default(0) @map("display_order")
+
+  // 系统预设渠道（外卖平台等），不可删除
+  isSystemChannel Boolean           @default(false) @map("is_system_channel")
+
+  // 外卖平台类型（仅系统渠道使用，null=非外卖平台渠道）
+  platformType    DeliveryPlatform? @map("platform_type")
+
+  // 平台佣金率（外卖平台渠道使用，0.00~1.00，如 0.30 = 30%）
+  // 用于报表中计算扣佣后的净收入
+  commissionRate  Decimal?          @map("commission_rate") @db.Decimal(5, 4)
+
+  // 渠道准入：PUBLIC=公开，MEMBER_ONLY=仅会员可用（依赖 member-service）
+  accessMode      ChannelAccessMode @default(PUBLIC) @map("access_mode")
+
+  // 结账方式：NORMAL=正常结账，CREDIT_ACCOUNT=记账
+  checkoutMode    CheckoutMode      @default(NORMAL) @map("checkout_mode")
+
+  // 记账配置（checkoutMode=CREDIT_ACCOUNT 时生效）
+  // 格式：{ billingCycle: 'WEEKLY'|'BIWEEKLY'|'MONTHLY', cycleLimit: number }
+  creditConfig    Json?             @map("credit_config") @db.Json
+
+  // 结账规则（整单折扣等）
+  // 格式：{ orderDiscount: { enabled: boolean, type: 'PERCENTAGE'|'FIXED', value: number } }
+  checkoutRules   Json?             @map("checkout_rules") @db.Json
+
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+
+  members         ChannelMember[]
+
+  @@unique([tenantId, sourceType])
+  @@index([tenantId, isActive])
+  @@index([tenantId, isSystemChannel])
+  @@map("order_source_configs")
+}
+
+// 渠道成员白名单（手机号维度，不强依赖会员账号）
+model ChannelMember {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  channelId   String   @map("channel_id") @db.Uuid
+  phone       String   @db.VarChar(30)       // 手机号（国际格式，如 +14161234567）
+  name        String?  @db.VarChar(100)      // 姓名备注（选填）
+  note        String?  @db.VarChar(255)      // 备注（如：张三 / Marketing Dept）
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  channel     OrderSourceConfig @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@unique([channelId, phone])
+  @@index([tenantId, phone])
+  @@map("channel_members")
+}
+
+model ReceiptTemplate {
+  id          String      @id @default(uuid()) @db.Uuid
+  tenantId    String      @map("tenant_id") @db.Uuid
+  name        String      @db.VarChar(255)
+  description String?
+  paperWidth  Int         @default(80) @map("paper_width")
+  isDefault   Boolean     @default(false) @map("is_default")
+  isActive    Boolean     @default(true) @map("is_active")
+  logoUrl     String?     @map("logo_url") @db.VarChar(500)  // Logo 图片 URL
+  config      Json        @db.Json
+  version     Int         @default(1)
+  createdBy   String      @map("created_by") @db.Uuid
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+  orderSource OrderSource @default(POS) @map("order_source")
+
+  @@index([tenantId, orderSource])
+  @@index([tenantId, isDefault])
+  @@index([tenantId, isActive])
+  @@map("receipt_templates")
+}
+
+enum CheckoutMode {
+  NORMAL         // 正常结账（信用卡、现金等）
+  CREDIT_ACCOUNT // 记账（延迟支付，按周期结算）
+}
+
+enum ChannelAccessMode {
+  PUBLIC      // 公开渠道，任何人可使用
+  MEMBER_ONLY // 仅限会员（依赖 member-service 验证手机号）
+}
+
+enum DeliveryPlatform {
+  UBER_EATS        // Uber Eats
+  DOORDASH         // DoorDash
+  SKIP_THE_DISHES  // Skip The Dishes
+  GRUBHUB          // Grubhub
+  RITUAL           // Ritual
+  FANTUAN          // 饭团（北美华人外卖平台）
+  OTHER_PLATFORM   // 其他外卖平台
+}
+
+enum OrderType {
+  DINE_IN
+  TAKEOUT
+  DELIVERY
+  GIFT_CARD  // 礼品卡购买订单
+}
+
+enum OrderSource {
+  POS
+  WEB
+  KIOSK
+  UBER_EATS    // Uber Eats Marketplace 来单
+}
+
+enum OrderStatus {
+  SCHEDULED            // 预约中（等待到达预约时间后自动释放）
+  PENDING              // 待确认
+  CONFIRMED            // 已确认
+  PREPARING            // 准备中/制作中
+  READY                // 已完成/待取餐
+  PICKED_UP            // 已取餐（KIOSK/自取订单）
+  OUT_FOR_DELIVERY     // 配送中（外卖订单）
+  DELIVERED            // 已送达（外卖订单）
+  COMPLETED            // 已完成
+  CANCELLED            // 已取消
+}
+
+enum NoteType {
+  GENERAL
+  KITCHEN
+  CUSTOMER
+  INTERNAL
+}
+
+enum PrintType {
+  RECEIPT
+  KITCHEN_TICKET
+  LABEL
+  DAILY_REPORT
+  SHIFT_REPORT
+}
+
+enum TicketType {
+  CUSTOMER_RECEIPT
+  KITCHEN_TICKET
+  ITEM_LABEL
+  CUSTOM_LABEL      // 顾客自定义标签（仅 WEB 订单）
+  DAILY_REPORT
+  SHIFT_REPORT
+}
+
+enum PrintStatus {
+  SUCCESS
+  FAILED
+}
+
+enum PrintTaskStatus {
+  PENDING           // 等待推送
+  SENT              // 已推送给设备
+  RECEIVED          // 设备已确认接收 (TASK_ACK)
+  COMPLETED         // 打印完成
+  FAILED            // 打印失败
+}
+
+enum PrintTaskSource {
+  POS
+  ONLINE
+  KIOSK
+}
+
+enum PaymentStatus {
+  UNPAID
+  PAID
+  PARTIALLY_PAID
+  REFUNDING
+  REFUNDED
+  FAILED
+}
+
+enum CancellationReason {
+  MERCHANT_REQUEST
+  CUSTOMER_REQUEST
+  OUT_OF_STOCK
+  DUPLICATE_ORDER
+  PAYMENT_FAILED
+  SYSTEM_CANCEL
+}
+
+// 天气状况（归一化枚举，由 WMO weather_code 映射而来，避免自由文本碎类别）
+enum WeatherCondition {
+  CLEAR          // 晴
+  PARTLY_CLOUDY  // 多云
+  CLOUDY         // 阴
+  FOG            // 雾
+  DRIZZLE        // 毛毛雨
+  RAIN           // 雨
+  FREEZING_RAIN  // 冻雨
+  SNOW           // 雪
+  SLEET          // 雨夹雪
+  THUNDERSTORM   // 雷暴
+  HAIL           // 冰雹
+  WINDY          // 大风
+  UNKNOWN        // 未知（映射失败兜底）
+}
+
+// 时段（按门店本地时区的小时划分，便于"早/午/晚市"维度分析）
+enum DayPart {
+  LATE_NIGHT     // 0-5  深夜
+  EARLY_MORNING  // 5-8  清晨
+  MORNING        // 8-11 上午
+  LUNCH          // 11-14 午市
+  AFTERNOON      // 14-17 下午
+  DINNER         // 17-21 晚市
+  NIGHT          // 21-24 夜间
+}
+
+// 订单状态历史记录
+model OrderStatusHistory {
+  id          String      @id @default(uuid()) @db.Uuid
+  orderId     String      @map("order_id") @db.Uuid
+  fromStatus  OrderStatus @map("from_status")
+  toStatus    OrderStatus @map("to_status")
+  reason      String?     @db.Text
+  changedBy   String?     @map("changed_by") @db.Uuid
+  changedAt   DateTime    @default(now()) @map("changed_at")
+  
+  order       Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  
+  @@index([orderId, changedAt])
+  @@map("order_status_history")
+}
+
+// 订单分析数据（自动采集时间维度 + 后续丰富天气/活动维度）
+// 订单分析维度表（每订单一行的事实表，供 BI / AI 分析）
+// 设计原则：系统维度（天气/时间/日历）用强类型列；原始天气留底用 jsonb 逃生舱
+model OrderAnalytics {
+  id        String @id @default(uuid()) @db.Uuid
+  orderId   String @unique @map("order_id") @db.Uuid
+  tenantId  String @map("tenant_id") @db.Uuid          // 门店 ID（自给自足，无需 join orders 即可按店分析）
+
+  // ---- 时间维度（全部按门店本地时区计算）----
+  localTime   DateTime @map("local_time")               // 门店本地墙钟下单时间
+  timezone    String   @map("timezone") @db.VarChar(64) // IANA 时区，如 America/Toronto；无法解析时为 UTC
+  year        Int                                        // 本地年
+  month       Int                                        // 本地月 1-12
+  day         Int                                        // 本地日 1-31
+  dayOfWeek   Int      @map("day_of_week")               // 0=周日 ... 6=周六（本地）
+  hour        Int                                        // 本地小时 0-23
+  weekOfYear  Int      @map("week_of_year")              // ISO 周序号 1-53
+  isWeekend   Boolean  @map("is_weekend")                // 是否周末
+  dayPart     DayPart  @map("day_part")                  // 时段（早/午/晚市等）
+
+  // ---- 天气维度（常用字段提为强类型列，原始返回进 weatherRaw）----
+  weatherCondition WeatherCondition? @map("weather_condition")           // 归一化天气状况
+  weatherTemp      Float?            @map("weather_temp")                 // 气温 ℃
+  weatherFeelsLike Float?            @map("weather_feels_like")           // 体感温度 ℃
+  weatherHumidity  Int?              @map("weather_humidity")             // 相对湿度 %
+  weatherPrecipMm  Float?            @map("weather_precip_mm")            // 降水量 mm
+  weatherWindKph   Float?            @map("weather_wind_kph")             // 风速 km/h
+  weatherCloudPct  Int?              @map("weather_cloud_pct")            // 云量 %
+  isRaining        Boolean?          @map("is_raining")                   // 是否在下雨
+  weatherSource    String?           @map("weather_source") @db.VarChar(50) // 数据源，如 open-meteo
+  weatherFetchedAt DateTime?         @map("weather_fetched_at")           // 天气采样时间
+  weatherRaw       Json?             @map("weather_raw") @db.JsonB        // 原始天气返回（唯一的扩展逃生舱）
+
+  // ---- 日历 / 活动维度 ----
+  isHoliday   Boolean @default(false) @map("is_holiday")                 // 是否节假日（数据源待接入）
+  holidayName String? @map("holiday_name") @db.VarChar(255)              // 节假日名称
+  eventName   String? @map("event_name") @db.VarChar(255)               // 节日/活动
+
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  order       Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, localTime])
+  @@index([tenantId, weatherCondition])
+  @@index([tenantId, dayOfWeek, hour])
+  @@index([tenantId, isHoliday])
+  @@map("order_analytics")
+}
+
+// 打印任务（WebSocket 集中打印队列）
+model PrintTask {
+  id           String          @id @default(uuid()) @db.Uuid
+  tenantId     String          @map("tenant_id") @db.Uuid
+  orderId      String          @map("order_id") @db.Uuid
+  ticketType   TicketType      @map("ticket_type")
+  source       PrintTaskSource
+  priority     Int             @default(2)           // 0=紧急, 1=厨房单, 2=收据, 3=标签
+  status       PrintTaskStatus @default(PENDING)
+  payload      Json            @db.Json              // 完整的打印数据（receiptData/kitchenData/labelData）
+
+  // 设备信息（推送后填入）
+  deviceId     String?         @map("device_id") @db.VarChar(255)
+  sentAt       DateTime?       @map("sent_at")
+  receivedAt   DateTime?       @map("received_at")
+  completedAt  DateTime?       @map("completed_at")
+  failedAt     DateTime?       @map("failed_at")
+  error        String?         @db.Text
+
+  retryCount   Int             @default(0) @map("retry_count")
+
+  createdAt    DateTime        @default(now()) @map("created_at")
+  updatedAt    DateTime        @updatedAt @map("updated_at")
+
+  order        Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, status])
+  @@index([orderId])
+  @@index([deviceId, status])
+  @@map("print_tasks")
+}
+
+// 打印品牌配置（租户级别，Logo 复用的核心）
+// 各打印模板的 logoUrl 为空时自动继承此处配置
+model PrintBrandProfile {
+  id           String   @id @default(uuid()) @db.Uuid
+  tenantId     String   @unique @map("tenant_id") @db.Uuid     // 每个租户唯一
+  logoUrl      String?  @map("logo_url") @db.VarChar(500)      // Cloudinary URL
+  logoPublicId String?  @map("logo_public_id") @db.VarChar(500) // 用于 Cloudinary 删除
+  updatedAt    DateTime @updatedAt @map("updated_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("print_brand_profiles")
+}
+
+// 打印设置（按票据类型配置打印内容）
+model PrintSetting {
+  id         String     @id @default(uuid()) @db.Uuid
+  tenantId   String     @map("tenant_id") @db.Uuid
+  ticketType TicketType @map("ticket_type")
+  isEnabled  Boolean    @default(true) @map("is_enabled")
+  copies     Int        @default(1)
+  config     Json       @db.Json
+  version    Int        @default(1)
+  createdBy  String     @map("created_by") @db.Uuid
+  createdAt  DateTime   @default(now()) @map("created_at")
+  updatedAt  DateTime   @updatedAt @map("updated_at")
+
+  @@unique([tenantId, ticketType])
+  @@index([tenantId])
+  @@map("print_settings")
+}
+
+// 商家在线点单配置
+// 注意：商家身份字段（subdomain / customDomain / themeSettings）已全部迁移到 auth-service.Organization
+// 会员开关 memberEnabled 由 member-service.MemberConfig 负责，本表不再保留
+// parentMerchantId 保留：由 createConfig 时从 auth-service 同步过来，作为本服务内部的层级运维数据
+model MerchantOnlineOrderConfig {
+  id               String   @id @default(uuid()) @db.Uuid
+  merchantId       String   @unique @map("merchant_id") @db.Uuid
+  parentMerchantId String?  @map("parent_merchant_id") @db.Uuid // 主店ID（同步自 auth-service.Organization.parentOrgId）
+  enabled          Boolean  @default(true)
+
+  // 订单类型配置
+  allowPickup      Boolean  @default(true) @map("allow_pickup")
+  allowDineIn      Boolean  @default(true) @map("allow_dine_in")
+  allowDelivery    Boolean  @default(true) @map("allow_delivery")
+
+  // 营业时间已迁移到 auth-service Organization.businessHours；DB 列保留但不再写入，后续 migration 可删
+  businessHours    Json?    @map("business_hours") @db.Json
+
+  // 订单设置
+  minOrderAmount   Int?     @map("min_order_amount") // 最低订单金额(分)
+  deliveryFee      Int?     @map("delivery_fee")     // 配送费(分)
+  deliveryRadius   Decimal? @map("delivery_radius") @db.Decimal(10, 2) // 配送半径(公里)
+
+  // 自取预约配置
+  allowPickupSchedule  Boolean @default(true)  @map("allow_pickup_schedule")   // 是否允许预约自取
+  pickupLeadMinutes    Int     @default(15)     @map("pickup_lead_minutes")     // 最早可预约提前量（分钟）
+  pickupSlotInterval   Int     @default(30)     @map("pickup_slot_interval")    // 时间槽间隔（分钟）
+  pickupAdvanceDays    Int     @default(0)      @map("pickup_advance_days")     // 可提前预约天数（0=仅今天）
+
+  // 时间戳
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  @@index([merchantId])
+  @@index([parentMerchantId])
+  @@index([enabled])
+  @@map("merchant_online_order_configs")
+}
+
+// 结账快照（用于支付前锁定订单信息）
+model CheckoutSnapshot {
+  id              String   @id @default(uuid()) @db.Uuid
+  merchantId      String   @map("merchant_id") @db.Uuid
+  status          String   @default("PENDING") @db.VarChar(20)  // PENDING | USED | EXPIRED
+
+  // 用户关联（可选，未登录时为空，验证后回填）
+  consumerId      String?   @map("consumer_id") @db.Uuid
+
+  // 完整订单数据
+  orderType       OrderType @map("order_type")
+  customerName    String    @map("customer_name") @db.VarChar(255)
+  customerPhone   String    @map("customer_phone") @db.VarChar(50)
+  customerEmail   String?   @map("customer_email") @db.VarChar(255)
+  items           Json      @db.Json                          // 商品列表（验证后的价格）
+  pricing         Json      @db.Json                          // 价格明细
+  notes           String?   @db.Text
+  customLabelData Json?     @map("custom_label_data") @db.Json  // 顾客自定义标签数据
+  deliveryAddress Json?     @map("delivery_address") @db.Json   // 配送地址（DELIVERY 类型时）
+  scheduledAt     DateTime? @map("scheduled_at")                // 预约取餐时间（预约订单时有值）
+
+  // 关联字段（支付成功后填入）
+  paymentIntentId String?   @unique @map("payment_intent_id") @db.VarChar(255)
+  orderId         String?   @unique @map("order_id") @db.Uuid
+
+  // 时间戳
+  createdAt       DateTime  @default(now()) @map("created_at")
+  expiresAt       DateTime  @map("expires_at")                // 过期时间（30分钟）
+
+  @@index([merchantId, status])
+  @@index([status, expiresAt])  // 用于定时清理
+  @@map("checkout_snapshots")
+}
+
+// 取餐号配置（每个租户一条，全渠道共享计数器）
+model PickupNumberConfig {
+  id              String   @id @default(uuid()) @db.Uuid
+  tenantId        String   @unique @map("tenant_id") @db.Uuid
+  startAt         Int      @default(1) @map("start_at")
+  showPrefix      Boolean  @default(true) @map("show_prefix")
+  channelPrefixes Json     @default("{}") @map("channel_prefixes") @db.Json
+  // channelPrefixes 格式：{ "POS": "P", "WEB": "W", "KIOSK": "K" }，未配置的渠道用内置默认值
+  queueDisplayEnabled Boolean @default(false) @map("queue_display_enabled") // 开启叫号屏（开启后订单必须走完整状态流程）
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@map("pickup_number_configs")
+}
+
+// 取餐号当日计数器（原子自增，全渠道共享，消除并发竞态）
+model PickupCounter {
+  tenantId    String   @map("tenant_id") @db.Uuid
+  date        DateTime @db.Date                              // 当天日期，每天自动重置
+  counter     Int                                           // 当日最新取餐号
+
+  @@id([tenantId, date])
+  @@map("pickup_counters")
+}

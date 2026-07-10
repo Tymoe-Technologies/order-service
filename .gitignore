@@ -1,0 +1,19 @@
+node_modules/
+dist/
+.env
+.env.local
+*.log
+.DS_Store
+coverage/
+.vscode/
+.idea/
+*.swp
+*.swo
+.prisma/
+
+# 额外的 env 变体，防止误提交敏感信息（.example 结尾的占位文件除外）
+.env.bak
+.env.development
+.env.production
+.env.rabbitmq.example
+*.env.bak

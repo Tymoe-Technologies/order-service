@@ -1,0 +1,132 @@
+### 商家在线点单配置 API 测试
+
+@baseUrl = http://localhost:3002/api/order/v1
+@merchantId = 123e4567-e89b-12d3-a456-426614174000
+
+### 1. 创建商家配置
+POST {{baseUrl}}/merchants/{{merchantId}}/config
+Content-Type: application/json
+
+{
+  "subdomain": "sweet7",
+  "enabled": true,
+  "allowPickup": true,
+  "allowDineIn": true,
+  "allowDelivery": true,
+  "minOrderAmount": 1000,
+  "deliveryFee": 500,
+  "deliveryRadius": 5.0,
+  "businessHours": {
+    "monday": { "open": "09:00", "close": "22:00", "closed": false },
+    "tuesday": { "open": "09:00", "close": "22:00", "closed": false },
+    "wednesday": { "open": "09:00", "close": "22:00", "closed": false },
+    "thursday": { "open": "09:00", "close": "22:00", "closed": false },
+    "friday": { "open": "09:00", "close": "22:00", "closed": false },
+    "saturday": { "open": "10:00", "close": "23:00", "closed": false },
+    "sunday": { "open": "10:00", "close": "23:00", "closed": false }
+  },
+  "themeSettings": {
+    "primaryColor": "#f97316",
+    "logoUrl": "https://example.com/logo.png",
+    "bannerUrl": "https://example.com/banner.jpg"
+  }
+}
+
+### 2. 根据子域名获取配置 (在线点单前端调用)
+GET {{baseUrl}}/merchant-config/by-subdomain/sweet7
+
+### 3. 根据商家 ID 获取配置 (Portal 调用)
+GET {{baseUrl}}/merchants/{{merchantId}}/config
+
+### 4. 检查子域名可用性
+POST {{baseUrl}}/merchant-config/check-subdomain
+Content-Type: application/json
+
+{
+  "subdomain": "sweet7"
+}
+
+### 5. 检查子域名可用性 (排除当前商家)
+POST {{baseUrl}}/merchant-config/check-subdomain
+Content-Type: application/json
+
+{
+  "subdomain": "sweet7",
+  "excludeMerchantId": "{{merchantId}}"
+}
+
+### 6. 更新商家配置
+PUT {{baseUrl}}/merchants/{{merchantId}}/config
+Content-Type: application/json
+
+{
+  "minOrderAmount": 1500,
+  "deliveryFee": 600,
+  "enabled": true
+}
+
+### 7. 更新子域名
+PUT {{baseUrl}}/merchants/{{merchantId}}/config
+Content-Type: application/json
+
+{
+  "subdomain": "sweet7-new"
+}
+
+### 8. 禁用在线点单
+PUT {{baseUrl}}/merchants/{{merchantId}}/config
+Content-Type: application/json
+
+{
+  "enabled": false
+}
+
+### 9. 启用在线点单
+PUT {{baseUrl}}/merchants/{{merchantId}}/config
+Content-Type: application/json
+
+{
+  "enabled": true
+}
+
+### 10. 获取所有配置 (管理员)
+GET {{baseUrl}}/admin/merchant-configs?page=1&limit=20
+
+### 11. 删除商家配置
+DELETE {{baseUrl}}/merchants/{{merchantId}}/config
+
+### 测试错误场景
+
+### 12. 创建重复的子域名 (应该失败)
+POST {{baseUrl}}/merchants/456e4567-e89b-12d3-a456-426614174001/config
+Content-Type: application/json
+
+{
+  "subdomain": "sweet7",
+  "enabled": true
+}
+
+### 13. 无效的子域名格式 (应该失败)
+POST {{baseUrl}}/merchants/{{merchantId}}/config
+Content-Type: application/json
+
+{
+  "subdomain": "-invalid",
+  "enabled": true
+}
+
+### 14. 子域名太短 (应该失败)
+POST {{baseUrl}}/merchants/{{merchantId}}/config
+Content-Type: application/json
+
+{
+  "subdomain": "a",
+  "enabled": true
+}
+
+### 15. 获取不存在的配置 (应该返回 404)
+GET {{baseUrl}}/merchant-config/by-subdomain/nonexistent
+
+### 16. 获取已禁用的配置 (应该返回 403)
+# 先禁用,再尝试获取
+GET {{baseUrl}}/merchant-config/by-subdomain/sweet7

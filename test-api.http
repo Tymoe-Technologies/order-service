@@ -1,0 +1,321 @@
+### Health Check
+GET http://localhost:3002/health
+
+### Create Order (POS - 员工下单)
+POST http://localhost:3002/api/order/v1/orders
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+Content-Type: application/json
+
+{
+  "orderType": "DINE_IN",
+  "orderSource": "POS",
+  "tableNumber": "A5",
+  "customerName": "张三",
+  "customerPhone": "13800138000",
+  "items": [
+    {
+      "itemId": "550e8400-e29b-41d4-a716-446655440000",
+      "itemName": "拿铁咖啡",
+      "quantity": 2,
+      "unitPrice": 35.00,
+      "attributes": {
+        "size": "大杯",
+        "temperature": "热"
+      },
+      "addons": [
+        {
+          "id": "550e8400-e29b-41d4-a716-446655440001",
+          "name": "额外浓缩",
+          "price": 5.00
+        }
+      ],
+      "specialNotes": "少糖"
+    }
+  ],
+  "notes": "请尽快制作",
+  "discountAmount": 0
+}
+
+### Create Order (WEB - 客人Web自助下单)
+POST http://localhost:3002/api/order/v1/orders
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+Content-Type: application/json
+
+{
+  "orderType": "TAKEOUT",
+  "orderSource": "WEB",
+  "customerName": "李四",
+  "customerPhone": "13900139000",
+  "items": [
+    {
+      "itemId": "550e8400-e29b-41d4-a716-446655440002",
+      "itemName": "美式咖啡",
+      "quantity": 1,
+      "unitPrice": 28.00
+    }
+  ],
+  "discountAmount": 0
+}
+
+### Create Order (KIOSK - 客人Kiosk下单)
+POST http://localhost:3002/api/order/v1/orders
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+Content-Type: application/json
+
+{
+  "orderType": "DINE_IN",
+  "orderSource": "KIOSK",
+  "tableNumber": "B3",
+  "items": [
+    {
+      "itemId": "550e8400-e29b-41d4-a716-446655440003",
+      "itemName": "卡布奇诺",
+      "quantity": 1,
+      "unitPrice": 32.00
+    }
+  ],
+  "discountAmount": 0
+}
+
+### Get Orders (All)
+GET http://localhost:3002/api/order/v1/orders?page=1&limit=20
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+
+### Get Orders (Filter by Status)
+GET http://localhost:3002/api/order/v1/orders?status=PENDING&page=1&limit=20
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+
+### Get Orders (Filter by Order Source - POS)
+GET http://localhost:3002/api/order/v1/orders?orderSource=POS&page=1&limit=20
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+
+### Get Orders (Filter by Order Source - WEB)
+GET http://localhost:3002/api/order/v1/orders?orderSource=WEB&page=1&limit=20
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+
+### Get Orders (Filter by Order Source - KIOSK)
+GET http://localhost:3002/api/order/v1/orders?orderSource=KIOSK&page=1&limit=20
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+
+### Get Order by ID
+GET http://localhost:3002/api/order/v1/orders/ORDER_ID_HERE
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+
+### Update Order Status
+PATCH http://localhost:3002/api/order/v1/orders/ORDER_ID_HERE/status
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+Content-Type: application/json
+
+{
+  "status": "PREPARING"
+}
+
+### Cancel Order
+POST http://localhost:3002/api/order/v1/orders/ORDER_ID_HERE/cancel
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+Content-Type: application/json
+
+{
+  "reason": "客户要求取消"
+}
+
+### Print Order
+POST http://localhost:3002/api/order/v1/orders/ORDER_ID_HERE/print
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+Content-Type: application/json
+
+{
+  "printType": "RECEIPT",
+  "printerName": "Kitchen-Printer-01",
+  "copies": 1
+}
+
+### Get Print Records
+GET http://localhost:3002/api/order/v1/orders/ORDER_ID_HERE/print-records
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+
+### Generate PDF Receipt
+GET http://localhost:3002/api/order/v1/orders/ORDER_ID_HERE/receipt/pdf
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+
+### Add Order Note
+POST http://localhost:3002/api/order/v1/orders/ORDER_ID_HERE/notes
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+Content-Type: application/json
+
+{
+  "noteType": "KITCHEN",
+  "content": "客人对花生过敏,请注意",
+  "color": "#FF5733",
+  "isPinned": true
+}
+
+### Update Note
+PUT http://localhost:3002/api/order/v1/orders/ORDER_ID_HERE/notes/NOTE_ID_HERE
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+Content-Type: application/json
+
+{
+  "content": "更新后的便签内容",
+  "color": "#00FF00"
+}
+
+### Delete Note
+DELETE http://localhost:3002/api/order/v1/orders/ORDER_ID_HERE/notes/NOTE_ID_HERE
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+
+### Get Note Templates
+GET http://localhost:3002/api/order/v1/note-templates
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+
+### Create Note Template
+POST http://localhost:3002/api/order/v1/note-templates
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+Content-Type: application/json
+
+{
+  "name": "配送提醒",
+  "content": "配送地址: {address}",
+  "color": "#0000FF"
+}
+
+### Get Statistics
+GET http://localhost:3002/api/order/v1/statistics/orders?startDate=2024-01-01&endDate=2024-12-31
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+
+# ============================================
+# 小票模板管理
+# ============================================
+
+### Create Receipt Template
+POST http://localhost:3002/api/order/v1/receipt-templates
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+Content-Type: application/json
+
+{
+  "name": "标准堂食模板",
+  "description": "适用于堂食订单的详细小票",
+  "paperWidth": 80,
+  "isDefault": true,
+  "config": {
+    "header": {
+      "logo": {
+        "enabled": false
+      },
+      "storeName": {
+        "enabled": true,
+        "text": "星巴克咖啡",
+        "fontSize": "large",
+        "bold": true,
+        "alignment": "center"
+      },
+      "storeInfo": {
+        "enabled": true,
+        "showAddress": true,
+        "showPhone": true
+      },
+      "separator": {
+        "enabled": true,
+        "char": "="
+      }
+    },
+    "body": {
+      "orderInfo": {
+        "enabled": true,
+        "fields": [
+          {"label": "订单号", "field": "orderNumber", "bold": true},
+          {"label": "订单类型", "field": "orderType"},
+          {"label": "订单来源", "field": "orderSource"},
+          {"label": "桌号", "field": "tableNumber"},
+          {"label": "时间", "field": "createdAt"}
+        ]
+      },
+      "items": {
+        "enabled": true,
+        "showHeader": true,
+        "headerText": "商品明细",
+        "showAttributes": true,
+        "showAddons": true,
+        "showNotes": true
+      }
+    },
+    "footer": {
+      "summary": {
+        "enabled": true,
+        "showSubtotal": true,
+        "showDiscount": true,
+        "showTax": false,
+        "showTotal": true
+      },
+      "qrcode": {
+        "enabled": true,
+        "size": 6,
+        "alignment": "center"
+      },
+      "customMessage": "感谢您的光临，欢迎再次光临！",
+      "wifi": {
+        "enabled": true,
+        "ssid": "Starbucks-WiFi",
+        "password": "welcome123"
+      }
+    },
+    "style": {
+      "lineSpacing": 1,
+      "feedLines": 3,
+      "cutPaper": true
+    }
+  }
+}
+
+### Get All Templates
+GET http://localhost:3002/api/order/v1/receipt-templates
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+
+### Get Active Templates Only
+GET http://localhost:3002/api/order/v1/receipt-templates?isActive=true
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+
+### Get Default Template
+GET http://localhost:3002/api/order/v1/receipt-templates/default
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+
+### Check Template Version (POS端使用)
+GET http://localhost:3002/api/order/v1/receipt-templates/check-version?version=1
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+
+### Get Template by ID
+GET http://localhost:3002/api/order/v1/receipt-templates/TEMPLATE_ID_HERE
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+
+### Update Template
+PUT http://localhost:3002/api/order/v1/receipt-templates/TEMPLATE_ID_HERE
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+Content-Type: application/json
+
+{
+  "name": "更新后的模板名称",
+  "config": {
+    "header": {
+      "storeName": {
+        "text": "星巴克咖啡（更新）"
+      }
+    }
+  }
+}
+
+### Set as Default Template
+POST http://localhost:3002/api/order/v1/receipt-templates/TEMPLATE_ID_HERE/set-default
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+
+### Toggle Template (Enable/Disable)
+PATCH http://localhost:3002/api/order/v1/receipt-templates/TEMPLATE_ID_HERE/toggle
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+Content-Type: application/json
+
+{
+  "isActive": false
+}
+
+### Delete Template
+DELETE http://localhost:3002/api/order/v1/receipt-templates/TEMPLATE_ID_HERE
+Authorization: Bearer YOUR_JWT_TOKEN_HERE

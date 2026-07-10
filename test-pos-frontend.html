@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>POS 现金支付测试</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: #f5f5f5;
+      padding: 20px;
+    }
+
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+      padding: 30px;
+    }
+
+    h1 {
+      color: #333;
+      margin-bottom: 10px;
+    }
+
+    .subtitle {
+      color: #666;
+      margin-bottom: 30px;
+    }
+
+    .config-section {
+      background: #f9f9f9;
+      padding: 20px;
+      border-radius: 8px;
+      margin-bottom: 30px;
+    }
+
+    .form-group {
+      margin-bottom: 20px;
+    }
+
+    label {
+      display: block;
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: #333;
+    }
+
+    input, select, textarea {
+      width: 100%;
+      padding: 12px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: 14px;
+      font-family: monospace;
+    }
+
+    input:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: #4CAF50;
+    }
+
+    .order-items {
+      margin-bottom: 20px;
+    }
+
+    .item {
+      background: #f9f9f9;
+      padding: 15px;
+      border-radius: 6px;
+      margin-bottom: 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .item-info {
+      flex: 1;
+    }
+
+    .item-price {
+      font-weight: 600;
+      color: #4CAF50;
+      font-size: 18px;
+    }
+
+    .total-section {
+      background: #e8f5e9;
+      padding: 20px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+    }
+
+    .total-row {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 10px;
+      font-size: 16px;
+    }
+
+    .total-row.final {
+      font-size: 24px;
+      font-weight: 700;
+      color: #2e7d32;
+      padding-top: 10px;
+      border-top: 2px solid #4CAF50;
+    }
+
+    .cash-input-section {
+      background: #fff3e0;
+      padding: 20px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+    }
+
+    .cash-input-section input {
+      font-size: 24px;
+      text-align: center;
+      font-weight: 600;
+    }
+
+    .change-display {
+      background: #e3f2fd;
+      padding: 20px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      text-align: center;
+      display: none;
+    }
+
+    .change-display.show {
+      display: block;
+    }
+
+    .change-amount {
+      font-size: 48px;
+      font-weight: 700;
+      color: #1976d2;
+      margin: 10px 0;
+    }
+
+    .btn {
+      width: 100%;
+      padding: 16px;
+      border: none;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+
+    .btn-primary {
+      background: #4CAF50;
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: #45a049;
+    }
+
+    .btn-primary:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+
+    .result-section {
+      margin-top: 20px;
+      padding: 20px;
+      border-radius: 8px;
+      display: none;
+    }
+
+    .result-section.show {
+      display: block;
+    }
+
+    .result-section.success {
+      background: #e8f5e9;
+      border: 2px solid #4CAF50;
+    }
+
+    .result-section.error {
+      background: #ffebee;
+      border: 2px solid #f44336;
+    }
+
+    .result-title {
+      font-size: 20px;
+      font-weight: 600;
+      margin-bottom: 10px;
+    }
+
+    .result-section.success .result-title {
+      color: #2e7d32;
+    }
+
+    .result-section.error .result-title {
+      color: #c62828;
+    }
+
+    pre {
+      background: #f5f5f5;
+      padding: 15px;
+      border-radius: 6px;
+      overflow-x: auto;
+      font-size: 12px;
+    }
+
+    .warning {
+      background: #fff3cd;
+      border: 1px solid #ffc107;
+      padding: 15px;
+      border-radius: 6px;
+      margin-bottom: 20px;
+      color: #856404;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🧾 POS 现金支付测试</h1>
+    <p class="subtitle">测试 Order Service 现金支付接口</p>
+
+    <div class="warning">
+      ⚠️ 请先配置 API 地址、JWT Token 和 Tenant ID
+    </div>
+
+    <!-- 配置区域 -->
+    <div class="config-section">
+      <h3>API 配置</h3>
+      <div class="form-group">
+        <label>API Base URL</label>
+        <input type="text" id="apiUrl" value="http://localhost:3002/api/order/v1" placeholder="http://localhost:3002/api/order/v1">
+      </div>
+      <div class="form-group">
+        <label>JWT Token</label>
+        <textarea id="jwtToken" rows="3" placeholder="粘贴你的 JWT Token"></textarea>
+      </div>
+      <div class="form-group">
+        <label>Tenant ID (Organization ID)</label>
+        <input type="text" id="tenantId" placeholder="550e8400-e29b-41d4-a716-446655440000">
+      </div>
+    </div>
+
+    <!-- 订单信息 -->
+    <div class="form-group">
+      <label>订单类型</label>
+      <select id="orderType">
+        <option value="DINE_IN">堂食 (DINE_IN)</option>
+        <option value="TAKEOUT">自取 (TAKEOUT)</option>
+        <option value="DELIVERY">配送 (DELIVERY)</option>
+      </select>
+    </div>
+
+    <div class="form-group">
+      <label>桌号 (堂食必填)</label>
+      <input type="text" id="tableNumber" placeholder="A-01">
+    </div>
+
+    <div class="form-group">
+      <label>客户姓名 (可选)</label>
+      <input type="text" id="customerName" placeholder="张三">
+    </div>
+
+    <!-- 订单商品 -->
+    <div class="order-items">
+      <h3>订单商品</h3>
+      <div class="item">
+        <div class="item-info">
+          <div><strong>宫保鸡丁</strong></div>
+          <div style="color: #666; font-size: 14px;">数量: 1</div>
+        </div>
+        <div class="item-price">$38.00</div>
+      </div>
+      <div class="item">
+        <div class="item-info">
+          <div><strong>米饭</strong></div>
+          <div style="color: #666; font-size: 14px;">数量: 1</div>
+        </div>
+        <div class="item-price">$3.00</div>
+      </div>
+    </div>
+
+    <!-- 金额汇总 -->
+    <div class="total-section">
+      <div class="total-row">
+        <span>小计:</span>
+        <span>$41.00</span>
+      </div>
+      <div class="total-row">
+        <span>税费:</span>
+        <span>$3.28</span>
+      </div>
+      <div class="total-row final">
+        <span>总计:</span>
+        <span id="totalAmount">$44.28</span>
+      </div>
+    </div>
+
+    <!-- 现金输入 -->
+    <div class="cash-input-section">
+      <label>收到现金</label>
+      <input type="number" id="cashReceived" placeholder="输入收到的现金金额" step="0.01" min="0">
+      <div style="margin-top: 10px; text-align: center; color: #666;">
+        快捷按钮:
+        <button onclick="setCash(50)" style="margin: 5px; padding: 8px 16px; border: 1px solid #ddd; border-radius: 4px; cursor: pointer;">$50</button>
+        <button onclick="setCash(100)" style="margin: 5px; padding: 8px 16px; border: 1px solid #ddd; border-radius: 4px; cursor: pointer;">$100</button>
+        <button onclick="setCash(200)" style="margin: 5px; padding: 8px 16px; border: 1px solid #ddd; border-radius: 4px; cursor: pointer;">$200</button>
+      </div>
+    </div>
+
+    <!-- 找零显示 -->
+    <div class="change-display" id="changeDisplay">
+      <div style="font-size: 18px; color: #666;">找零</div>
+      <div class="change-amount" id="changeAmount">$0.00</div>
+      <div style="color: #666;">请找零给客户</div>
+    </div>
+
+    <!-- 提交按钮 -->
+    <button class="btn btn-primary" id="submitBtn" onclick="createOrder()">
+      确认收款并创建订单
+    </button>
+
+    <!-- 结果显示 -->
+    <div class="result-section" id="resultSection">
+      <div class="result-title" id="resultTitle"></div>
+      <pre id="resultContent"></pre>
+    </div>
+  </div>
+
+  <script>
+    const TOTAL_AMOUNT = 44.28;
+
+    // 设置现金金额
+    function setCash(amount) {
+      document.getElementById('cashReceived').value = amount;
+      calculateChange();
+    }
+
+    // 计算找零
+    function calculateChange() {
+      const cashReceived = parseFloat(document.getElementById('cashReceived').value) || 0;
+      const change = cashReceived - TOTAL_AMOUNT;
+      
+      const changeDisplay = document.getElementById('changeDisplay');
+      const changeAmount = document.getElementById('changeAmount');
+      
+      if (cashReceived >= TOTAL_AMOUNT) {
+        changeDisplay.classList.add('show');
+        changeAmount.textContent = `$${change.toFixed(2)}`;
+        changeAmount.style.color = change > 0 ? '#1976d2' : '#4CAF50';
+      } else {
+        changeDisplay.classList.remove('show');
+      }
+    }
+
+    // 监听现金输入
+    document.getElementById('cashReceived').addEventListener('input', calculateChange);
+
+    // 创建订单
+    async function createOrder() {
+      const apiUrl = document.getElementById('apiUrl').value;
+      const jwtToken = document.getElementById('jwtToken').value;
+      const tenantId = document.getElementById('tenantId').value;
+      const orderType = document.getElementById('orderType').value;
+      const tableNumber = document.getElementById('tableNumber').value;
+      const customerName = document.getElementById('customerName').value;
+      const cashReceived = parseFloat(document.getElementById('cashReceived').value);
+
+      // 验证必填字段
+      if (!apiUrl || !jwtToken || !tenantId) {
+        showResult('error', '请先配置 API 地址、JWT Token 和 Tenant ID');
+        return;
+      }
+
+      if (!cashReceived || cashReceived < TOTAL_AMOUNT) {
+        showResult('error', `现金不足！应收 $${TOTAL_AMOUNT.toFixed(2)}，实收 $${cashReceived.toFixed(2)}`);
+        return;
+      }
+
+      if (orderType === 'DINE_IN' && !tableNumber) {
+        showResult('error', '堂食订单必须填写桌号');
+        return;
+      }
+
+      // 构建订单数据
+      const orderData = {
+        orderType: orderType,
+        orderSource: 'POS',
+        tableNumber: tableNumber || undefined,
+        customerName: customerName || undefined,
+        items: [
+          {
+            itemId: '550e8400-e29b-41d4-a716-446655440001',
+            itemName: '宫保鸡丁',
+            quantity: 1,
+            unitPrice: 38.00
+          },
+          {
+            itemId: '550e8400-e29b-41d4-a716-446655440002',
+            itemName: '米饭',
+            quantity: 1,
+            unitPrice: 3.00
+          }
+        ],
+        taxAmount: 3.28,
+        totalAmount: TOTAL_AMOUNT,
+        paymentMethod: 'CASH',
+        cashReceived: cashReceived,
+        notes: '测试订单'
+      };
+
+      // 禁用按钮
+      const submitBtn = document.getElementById('submitBtn');
+      submitBtn.disabled = true;
+      submitBtn.textContent = '处理中...';
+
+      try {
+        // 发送请求
+        const response = await fetch(`${apiUrl}/orders`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${jwtToken}`,
+            'x-organization-id': tenantId
+          },
+          body: JSON.stringify(orderData)
+        });
+
+        const result = await response.json();
+
+        if (response.ok) {
+          showResult('success', '订单创建成功！', result);
+          
+          // 显示找零信息
+          if (result.data.changeGiven) {
+            alert(`✅ 订单创建成功！\n\n订单号: ${result.data.orderNumber}\n找零: $${result.data.changeGiven}`);
+          }
+        } else {
+          showResult('error', '订单创建失败', result);
+        }
+      } catch (error) {
+        showResult('error', '网络错误', { error: error.message });
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = '确认收款并创建订单';
+      }
+    }
+
+    // 显示结果
+    function showResult(type, title, content) {
+      const resultSection = document.getElementById('resultSection');
+      const resultTitle = document.getElementById('resultTitle');
+      const resultContent = document.getElementById('resultContent');
+
+      resultSection.className = `result-section show ${type}`;
+      resultTitle.textContent = title;
+      
+      if (content) {
+        resultContent.textContent = JSON.stringify(content, null, 2);
+      } else {
+        resultContent.textContent = '';
+      }
+
+      // 滚动到结果区域
+      resultSection.scrollIntoView({ behavior: 'smooth' });
+    }
+  </script>
+</body>
+</html>
+
+
+
+

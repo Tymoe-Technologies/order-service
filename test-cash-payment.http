@@ -1,0 +1,222 @@
+### 现金支付测试用例
+
+@baseUrl = http://localhost:3002/api/order/v1
+@token = YOUR_JWT_TOKEN_HERE
+@tenantId = YOUR_TENANT_ID_HERE
+
+###############################################
+# 测试 1: 正常现金支付
+###############################################
+
+POST {{baseUrl}}/orders
+Authorization: Bearer {{token}}
+x-organization-id: {{tenantId}}
+Content-Type: application/json
+
+{
+  "orderType": "DINE_IN",
+  "orderSource": "POS",
+  "tableNumber": "A-01",
+  "items": [
+    {
+      "itemId": "550e8400-e29b-41d4-a716-446655440000",
+      "itemName": "测试商品",
+      "quantity": 1,
+      "unitPrice": 10.00
+    }
+  ],
+  "taxAmount": 0.80,
+  "totalAmount": 10.80,
+  "paymentMethod": "CASH",
+  "cashReceived": 20.00
+}
+
+# 预期结果:
+# - paymentStatus: "PAID"
+# - cashReceived: 20.00
+# - changeGiven: 9.20
+
+###############################################
+# 测试 2: 现金刚好够（无需找零）
+###############################################
+
+POST {{baseUrl}}/orders
+Authorization: Bearer {{token}}
+x-organization-id: {{tenantId}}
+Content-Type: application/json
+
+{
+  "orderType": "TAKEOUT",
+  "orderSource": "POS",
+  "items": [
+    {
+      "itemId": "550e8400-e29b-41d4-a716-446655440001",
+      "itemName": "测试商品2",
+      "quantity": 2,
+      "unitPrice": 15.00
+    }
+  ],
+  "totalAmount": 30.00,
+  "paymentMethod": "CASH",
+  "cashReceived": 30.00
+}
+
+# 预期结果:
+# - paymentStatus: "PAID"
+# - cashReceived: 30.00
+# - changeGiven: 0.00
+
+###############################################
+# 测试 3: 现金不足（应该失败）
+###############################################
+
+POST {{baseUrl}}/orders
+Authorization: Bearer {{token}}
+x-organization-id: {{tenantId}}
+Content-Type: application/json
+
+{
+  "orderType": "DINE_IN",
+  "orderSource": "POS",
+  "items": [
+    {
+      "itemId": "550e8400-e29b-41d4-a716-446655440002",
+      "itemName": "测试商品3",
+      "quantity": 1,
+      "unitPrice": 50.00
+    }
+  ],
+  "totalAmount": 50.00,
+  "paymentMethod": "CASH",
+  "cashReceived": 40.00
+}
+
+# 预期结果:
+# - 400 错误
+# - 错误码: "INSUFFICIENT_CASH"
+# - 错误信息: "收到的现金不足，应收 50.00，实收 40.00"
+
+###############################################
+# 测试 4: 缺少 cashReceived（应该失败）
+###############################################
+
+POST {{baseUrl}}/orders
+Authorization: Bearer {{token}}
+x-organization-id: {{tenantId}}
+Content-Type: application/json
+
+{
+  "orderType": "DINE_IN",
+  "orderSource": "POS",
+  "items": [
+    {
+      "itemId": "550e8400-e29b-41d4-a716-446655440003",
+      "itemName": "测试商品4",
+      "quantity": 1,
+      "unitPrice": 25.00
+    }
+  ],
+  "totalAmount": 25.00,
+  "paymentMethod": "CASH"
+}
+
+# 预期结果:
+# - 400 错误
+# - 验证失败: cashReceived 字段必填
+
+###############################################
+# 测试 5: 大额现金支付
+###############################################
+
+POST {{baseUrl}}/orders
+Authorization: Bearer {{token}}
+x-organization-id: {{tenantId}}
+Content-Type: application/json
+
+{
+  "orderType": "DINE_IN",
+  "orderSource": "POS",
+  "tableNumber": "VIP-01",
+  "items": [
+    {
+      "itemId": "550e8400-e29b-41d4-a716-446655440004",
+      "itemName": "高级套餐",
+      "quantity": 3,
+      "unitPrice": 88.00
+    }
+  ],
+  "taxAmount": 21.12,
+  "serviceFee": 10.00,
+  "totalAmount": 295.12,
+  "paymentMethod": "CASH",
+  "cashReceived": 300.00
+}
+
+# 预期结果:
+# - paymentStatus: "PAID"
+# - cashReceived: 300.00
+# - changeGiven: 4.88
+
+###############################################
+# 测试 6: 带折扣的现金支付
+###############################################
+
+POST {{baseUrl}}/orders
+Authorization: Bearer {{token}}
+x-organization-id: {{tenantId}}
+Content-Type: application/json
+
+{
+  "orderType": "TAKEOUT",
+  "orderSource": "POS",
+  "items": [
+    {
+      "itemId": "550e8400-e29b-41d4-a716-446655440005",
+      "itemName": "特价商品",
+      "quantity": 2,
+      "unitPrice": 20.00
+    }
+  ],
+  "discountAmount": 5.00,
+  "discountType": "COUPON",
+  "discountCode": "SAVE5",
+  "totalAmount": 35.00,
+  "paymentMethod": "CASH",
+  "cashReceived": 50.00
+}
+
+# 预期结果:
+# - paymentStatus: "PAID"
+# - totalAmount: 35.00
+# - cashReceived: 50.00
+# - changeGiven: 15.00
+
+###############################################
+# 测试 7: 查询已支付订单
+###############################################
+
+GET {{baseUrl}}/orders?paymentStatus=PAID&paymentMethod=CASH
+Authorization: Bearer {{token}}
+x-organization-id: {{tenantId}}
+
+# 预期结果:
+# - 返回所有现金支付且已支付的订单列表
+
+###############################################
+# 测试 8: 获取订单详情（包含现金支付信息）
+###############################################
+
+GET {{baseUrl}}/orders/{orderId}
+Authorization: Bearer {{token}}
+x-organization-id: {{tenantId}}
+
+# 预期结果:
+# - 订单详情包含:
+#   - cashReceived
+#   - changeGiven
+#   - cashierId
+#   - paidAt
+
+
+
+
