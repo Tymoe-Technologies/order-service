@@ -164,8 +164,9 @@ async function getItemPrices(merchantId: string, itemIds: string[], channelCode?
         params: {
           limit: 1000,
           page: 1,
-          // 传入渠道码让 item-management 返回渠道定价（与前端展示逻辑一致）
-          ...(channelCode ? { channelCode } : {}),
+          // salesChannelCode = 销售渠道码：仅渠道单（有 salesChannelId）传入，
+          // item-management 据此返回销售渠道差价；普通单用门店统一价（产品规则）
+          ...(channelCode ? { salesChannelCode: channelCode } : {}),
         },
         headers: {
           'X-Merchant-Id': merchantId,
@@ -425,6 +426,8 @@ export async function createCheckoutSnapshot(
         basePrice,        // 分，不含 modifier，FREE_ITEM 折扣只免这部分
         unitPrice: realUnitPrice,  // 分
         modifiers: item.modifiers,
+        // 该商品自身的税率（逐行计税用，不与其他商品的税率混合）
+        taxRates: extractTaxRatesFromItems([realItem]),
         // 完整的修饰符信息（用于创建 OrderItemModifier 关系记录）
         verifiedModifiers: extractVerifiedModifiers(modifierData, realItem.item_modifier_groups),
       }
@@ -477,10 +480,23 @@ export async function createCheckoutSnapshot(
     // 折后小计（用于税费计算）
     const discountedSubtotal = subtotal - discountAmount - channelDiscountAmount
 
-    // 4. 从商品数据中提取税率，计算税费
-    const taxRates = extractTaxRatesFromItems(itemPrices)
-    console.log('[CheckoutSnapshot] Extracted tax rates:', taxRates)
-    const taxAmount = calculateTax(discountedSubtotal, taxRates)  // 分
+    // 4. 逐行计税：每行按该商品自身税率计税（税率并集乘整单会对不该征税的商品征税），
+    //    折扣按各行小计占比分摊到行后再计税，Σ行折扣 = 总折扣（末行吃余数）
+    const totalDiscount = discountAmount + channelDiscountAmount
+    let taxAmount = 0  // 分
+    if (subtotal > 0 && verifiedItems.length > 0) {
+      let allocatedDiscount = 0
+      verifiedItems.forEach((vi, idx) => {
+        const lineSubtotal = vi.unitPrice * vi.quantity
+        const lineDiscount = idx === verifiedItems.length - 1
+          ? totalDiscount - allocatedDiscount
+          : Math.round(totalDiscount * lineSubtotal / subtotal)
+        allocatedDiscount += lineDiscount
+        const taxableBase = Math.max(0, lineSubtotal - lineDiscount)
+        taxAmount += calculateTax(taxableBase, vi.taxRates)
+      })
+    }
+    console.log('[CheckoutSnapshot] Per-line tax total:', taxAmount)
 
     // 5. 小费由用户决定，直接使用
     const tipAmount = data.tipAmount || 0
