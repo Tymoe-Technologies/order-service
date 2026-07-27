@@ -7,7 +7,9 @@
 import type { IEventBus } from '../event-bus';
 import type { OrderPaidEvent } from '../types';
 import logger from '../../utils/logger';
+import prisma from '../../utils/prisma';
 import { broadcastDeliveryOrder } from '../../websocket/print-task-dispatcher';
+import { pickupNumberConfigService } from '../../services/print-setting.service';
 
 export function registerDeliveryHandler(bus: IEventBus): void {
   bus.on('ORDER_PAID', async (event) => {
@@ -36,12 +38,43 @@ export function registerDeliveryHandler(bus: IEventBus): void {
       tenantId: e.tenantId,
     });
 
+    // 记录 15 分钟自动接单截止时间，供 C 阶段自动接单 job 扫描；
+    // 失败不阻断推送——watchdog/自动接单 job 找不到 deadline 时会退化为按 paidAt 计算
+    const AUTO_CONFIRM_DEADLINE_MINUTES = Number(process.env.AUTO_CONFIRM_DEADLINE_MINUTES) || 15;
+    prisma.order.update({
+      where: { id: e.orderId },
+      data: { deliveryConfirmDeadlineAt: new Date(Date.now() + AUTO_CONFIRM_DEADLINE_MINUTES * 60 * 1000) },
+    }).catch(err => logger.warn('[DeliveryHandler] 写入 deliveryConfirmDeadlineAt 失败', { orderId: e.orderId, error: err.message }));
+
     // 将 unit/buzzer/deliveryNotes 拼成给骑手的配送备注
     const notesParts: string[] = [];
     if (deliveryAddress.unit) notesParts.push(`Unit ${deliveryAddress.unit}`);
     if (deliveryAddress.buzzer) notesParts.push(`Buzzer: ${deliveryAddress.buzzer}`);
     if (deliveryAddress.deliveryNotes) notesParts.push(deliveryAddress.deliveryNotes);
     const dropoffNotes = notesParts.length > 0 ? notesParts.join(', ') : undefined;
+
+    // 取餐号在订单创建时已经生成（不区分订单类型），但 pickupDisplay 不落库，需要现算；
+    // 配送订单其实不涉及到店取餐，取餐号在这里主要是给 POS/订单管理页面对账用的展示号
+    let pickupNumber: number | undefined;
+    let pickupDisplay: string | undefined;
+    try {
+      const order = await prisma.order.findUnique({
+        where: { id: e.orderId },
+        select: { pickupNumber: true, orderSource: true },
+      });
+      if (order?.pickupNumber != null) {
+        pickupNumber = order.pickupNumber;
+        const config = await pickupNumberConfigService.getConfig(e.tenantId);
+        pickupDisplay = pickupNumberConfigService.formatPickupDisplay(
+          order.pickupNumber,
+          order.orderSource,
+          config.showPrefix,
+          config.channelPrefixes,
+        );
+      }
+    } catch (err: any) {
+      logger.warn('[DeliveryHandler] 读取取餐号失败（不阻断推送）', { orderId: e.orderId, error: err.message });
+    }
 
     // 通过 WebSocket 推送给 POS，由员工选择备餐时间后创建 Uber 配送单
     broadcastDeliveryOrder(e.tenantId, {
@@ -54,6 +87,8 @@ export function registerDeliveryHandler(bus: IEventBus): void {
       dropoffNotes,
       items,
       createdAt: new Date().toISOString(),
+      pickupNumber,
+      pickupDisplay,
     });
   });
 }

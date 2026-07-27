@@ -139,8 +139,10 @@ export async function getConfigByMerchantId(merchantId: string) {
 
 /**
  * 创建商家点单配置
- * 主店/分店关系由 auth-service 决定：内部调 auth.resolveBySlug(merchantId) 拿 parentOrgId 自动填充
- * 业务规则：分店启用前，主店必须已启用（enabled=true）
+ * 主店/分店/加盟店关系由 auth-service 决定：内部调 auth.getOrganization(merchantId) 拿 parentOrgId 自动填充
+ * 业务规则：分店/加盟店启用前，主店必须已启用（enabled=true）
+ * 注意：这里必须用 getOrganization（按 orgId 查，任意 orgType 都能查到），
+ * 不能用 resolveBySlug（后者只解析 MAIN 类型组织），否则加盟商/分店无法自行创建配置
  */
 export async function createConfig(data: MerchantConfigData) {
   try {
@@ -151,8 +153,8 @@ export async function createConfig(data: MerchantConfigData) {
       throw new Error('Merchant already has a configuration');
     }
 
-    // 通过 auth-service 解析主店/分店关系
-    const org = await organizationService.resolveBySlug(data.merchantId);
+    // 通过 auth-service 解析组织的主店/分店/加盟店关系
+    const org = await organizationService.getOrganization(data.merchantId);
     if (!org) {
       throw new Error('Organization not found in auth-service');
     }
@@ -193,6 +195,30 @@ export async function createConfig(data: MerchantConfigData) {
     logger.error('Error creating merchant config:', error);
     throw error;
   }
+}
+
+/**
+ * 设置 allowDelivery 开关（供 uber-service 在 Uber Direct 开通/停用时同步调用）
+ * 如果商家还没有 merchantOnlineOrderConfig 记录（从未开启过在线点单），
+ * 直接返回 skipped，不自动创建——避免绕过 createConfig 里主店/分店的级联校验。
+ */
+export async function setAllowDelivery(merchantId: string, allowDelivery: boolean) {
+  const existing = await prisma.merchantOnlineOrderConfig.findUnique({
+    where: { merchantId },
+  });
+
+  if (!existing) {
+    logger.warn('setAllowDelivery: 商家尚未配置在线点单，跳过同步', { merchantId, allowDelivery });
+    return { skipped: true, reason: 'merchant_config_not_found' };
+  }
+
+  const config = await prisma.merchantOnlineOrderConfig.update({
+    where: { merchantId },
+    data: { allowDelivery },
+  });
+
+  logger.info('setAllowDelivery: 已同步', { merchantId, allowDelivery });
+  return { skipped: false, config };
 }
 
 /**

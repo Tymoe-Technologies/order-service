@@ -18,6 +18,8 @@ import orderService from '../services/order.service';
 import { v7 as uuidv7 } from 'uuid';
 import { dayBoundaries, pgTimezone } from '../utils/timezone';
 import organizationService from '../services/organization.service';
+import { setAllowDelivery } from '../services/merchant-config.service';
+import { pickupNumberConfigService } from '../services/print-setting.service';
 
 const FINANCE_SERVICE_URL = process.env.FINANCE_SERVICE_URL || 'http://localhost:7007';
 const INTERNAL_SERVICE_KEY = process.env.INTERNAL_SERVICE_KEY || '';
@@ -47,13 +49,61 @@ const router = Router();
 
 // ── Uber Direct 配送状态更新 ────────────────────────────────────────
 
-router.post('/delivery-status-update', internalAuth, (req: Request, res: Response) => {
-  const { tenantId, deliveryId, status, courier, dropoff_eta, pickup_eta, tracking_url } = req.body;
+router.post('/delivery-status-update', internalAuth, async (req: Request, res: Response) => {
+  const {
+    tenantId,
+    deliveryId,
+    orderId,
+    status,
+    courier,
+    dropoff_eta,
+    pickup_eta,
+    tracking_url,
+    cancelation_reason,
+    undeliverable_reason,
+    undeliverable_action,
+  } = req.body;
   if (!tenantId || !deliveryId || !status) {
     res.status(400).json({ error: 'tenantId, deliveryId, status 必填' });
     return;
   }
-  broadcastDeliveryStatusUpdate(tenantId, { deliveryId, status, courier, dropoff_eta, pickup_eta, tracking_url });
+
+  // Uber 侧带了取消/无法送达原因时，记录到订单历史，避免这类信息只存在于一次性的 WS 推送中
+  if (orderId && (cancelation_reason || undeliverable_reason || undeliverable_action)) {
+    try {
+      const order = await prisma.order.findUnique({ where: { id: orderId }, select: { status: true } });
+      if (order) {
+        const reasonParts = [
+          cancelation_reason?.secondary_reason && `取消原因: ${cancelation_reason.secondary_reason}`,
+          undeliverable_reason && `无法送达原因: ${undeliverable_reason}`,
+          undeliverable_action && `骑手后续动作: ${undeliverable_action}`,
+        ].filter(Boolean);
+        await prisma.orderStatusHistory.create({
+          data: {
+            orderId,
+            fromStatus: order.status,
+            toStatus: order.status,
+            reason: `[Uber Direct] ${reasonParts.join('；')}`,
+          },
+        });
+      }
+    } catch (err: any) {
+      logger.warn('[Internal] 记录 Uber 配送异常原因失败（不阻断广播）', { orderId, deliveryId, error: err.message });
+    }
+  }
+
+  broadcastDeliveryStatusUpdate(tenantId, {
+    deliveryId,
+    orderId,
+    status,
+    courier,
+    dropoff_eta,
+    pickup_eta,
+    tracking_url,
+    cancelation_reason,
+    undeliverable_reason,
+    undeliverable_action,
+  });
   res.json({ success: true });
 });
 
@@ -352,12 +402,20 @@ router.get('/delivery-pending-confirmations', internalAuth, async (req: Request,
         tenantId,
         orderType: 'DELIVERY',
         paymentStatus: 'PAID',
-        status: { notIn: ['COMPLETED', 'CANCELLED'] },
+        // 用专用字段判断"是否已确认"，不借用通用订单状态机：
+        // 之前用 status notIn(COMPLETED, CANCELLED)/仅 PENDING 都是拿状态字段做另一件事的判断依据，
+        // 一旦订单状态流转规则变化就容易连带出 bug（比如配送单已创建但状态被其他流程改回非 PENDING）
+        deliveryConfirmedAt: null,
+        // 已取消的订单不再推送接单弹窗（商家取消后退款回调落地前 paymentStatus 仍是 PAID，有时间窗）
+        cancelledAt: null,
         createdAt: { gte: since },
       },
       include: { orderItems: true },
       orderBy: { createdAt: 'asc' },
     });
+
+    // 同一个 tenantId 下的取餐号前缀配置一样，查一次复用，不用每个订单都查
+    const pickupConfig = orders.length > 0 ? await pickupNumberConfigService.getConfig(tenantId) : null;
 
     const data = orders.map((order: any) => {
       const addr = order.deliveryAddress as any;
@@ -379,6 +437,12 @@ router.get('/delivery-pending-confirmations', internalAuth, async (req: Request,
           quantity: item.quantity,
         })),
         createdAt: order.createdAt.toISOString(),
+        pickupNumber: order.pickupNumber ?? undefined,
+        pickupDisplay: order.pickupNumber != null && pickupConfig
+          ? pickupNumberConfigService.formatPickupDisplay(
+              order.pickupNumber, order.orderSource, pickupConfig.showPrefix, pickupConfig.channelPrefixes,
+            )
+          : undefined,
       };
     });
 
@@ -386,6 +450,71 @@ router.get('/delivery-pending-confirmations', internalAuth, async (req: Request,
     res.json({ success: true, data });
   } catch (error: any) {
     logger.error('[Internal] 查询待确认配送订单失败', { error: error.message });
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * 标记 Uber Direct 配送订单已送达并直接完成
+ * 由 uber-service 收到 Uber webhook（status: delivered）后调用。
+ * Uber 骑手送达即视为订单彻底结束，不需要店员再手动点"完成订单"，
+ * 跟手动配送/自取流程的 DELIVERED→COMPLETED 两步走不一样，这是业务上明确要的特例
+ */
+router.post('/orders/:orderId/mark-delivered', internalAuth, async (req: Request, res: Response) => {
+  const { orderId } = req.params;
+  const { tenantId, deliveredAt } = req.body || {};
+  if (!orderId) {
+    res.status(400).json({ error: 'orderId 必填' });
+    return;
+  }
+
+  try {
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      select: { id: true, orderNumber: true, status: true, tenantId: true },
+    });
+    if (!order) {
+      res.status(404).json({ error: '订单不存在' });
+      return;
+    }
+    // 已经是 COMPLETED/CANCELLED 就不用重复推进，避免 webhook 重放把 completedAt 覆盖
+    if (['COMPLETED', 'CANCELLED'].includes(order.status)) {
+      res.json({ success: true, skipped: true, status: order.status });
+      return;
+    }
+
+    const previousStatus = order.status;
+    // 优先用 Uber 上报的实际送达时间；缺失或格式不对时兜底用当前时间，不能因为时间解析失败卡住整个流程
+    const parsedDeliveredAt = deliveredAt ? new Date(deliveredAt) : null;
+    const eventTime = parsedDeliveredAt && !isNaN(parsedDeliveredAt.getTime()) ? parsedDeliveredAt : new Date();
+    await prisma.$transaction([
+      prisma.order.update({
+        where: { id: orderId },
+        data: { status: 'COMPLETED', deliveredAt: eventTime, completedAt: eventTime },
+      }),
+      prisma.orderStatusHistory.create({
+        data: {
+          orderId,
+          fromStatus: previousStatus as any,
+          toStatus: 'COMPLETED' as any,
+          reason: 'Uber Direct courier delivered the order',
+          changedAt: eventTime,
+        },
+      }),
+    ]);
+
+    broadcastOrderStatusChanged(order.tenantId, {
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      status: 'COMPLETED',
+      previousStatus,
+      tenantId: tenantId || order.tenantId,
+    });
+
+    logger.info('[Internal] Uber Direct 订单已送达并自动完成', { orderId });
+    res.json({ success: true, status: 'COMPLETED' });
+  } catch (error: any) {
+    logger.error('[Internal] 标记 Uber Direct 订单送达失败', { orderId, error: error.message });
     res.status(500).json({ error: error.message });
   }
 });
@@ -402,12 +531,16 @@ router.post('/delivery-confirmation/:orderId/confirm', internalAuth, async (req:
   }
 
   try {
-    await prisma.$transaction([
-      prisma.order.update({
-        where: { id: orderId },
-        data: { status: 'CONFIRMED' },
-      }),
-      prisma.orderStatusHistory.create({
+    // 天然幂等：这条兜底回调可能与 B1 的 /orders/:orderId/delivery/confirm 竞争同一笔订单
+    // （比如 order-service 编排接口已经建单成功并写了字段，uber-service 这边 best-effort 回调才姗姗来迟），
+    // 用 WHERE deliveryConfirmedAt IS NULL 保证只有先到的那次真正生效，后到的直接跳过
+    const updated = await prisma.order.updateMany({
+      where: { id: orderId, deliveryConfirmedAt: null },
+      data: { status: 'CONFIRMED', deliveryConfirmedAt: new Date(), deliveryConfirmedBy: 'MANUAL' },
+    });
+
+    if (updated.count > 0) {
+      await prisma.orderStatusHistory.create({
         data: {
           orderId,
           fromStatus: 'PENDING' as any,
@@ -415,12 +548,39 @@ router.post('/delivery-confirmation/:orderId/confirm', internalAuth, async (req:
           reason: 'Delivery confirmed by merchant',
           changedAt: new Date(),
         },
-      }),
-    ]);
-    logger.info('[Internal] 配送订单已标记确认', { orderId });
+      });
+      logger.info('[Internal] 配送订单已标记确认', { orderId });
+    } else {
+      logger.info('[Internal] 配送订单已确认过，跳过重复回调', { orderId });
+    }
     res.json({ success: true });
   } catch (error: any) {
     logger.error('[Internal] 标记配送确认失败', { orderId, error: error.message });
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ── Uber Direct 自配送开关同步（uber-service 调用）──────────────────
+
+/**
+ * 同步商家的 allowDelivery 开关
+ * 由 uber-service 在 Uber Direct 开通（ACTIVE）/停用（INACTIVE）时调用，
+ * 保证商品"售卖范围"里的"自配送"选项跟 Uber Direct 实际开通状态一致
+ */
+router.patch('/merchant-config/:merchantId/allow-delivery', internalAuth, async (req: Request, res: Response) => {
+  const { merchantId } = req.params;
+  const { allowDelivery } = req.body;
+
+  if (typeof allowDelivery !== 'boolean') {
+    res.status(400).json({ error: 'allowDelivery 必须是布尔值' });
+    return;
+  }
+
+  try {
+    const result = await setAllowDelivery(merchantId, allowDelivery);
+    res.json({ success: true, ...result });
+  } catch (error: any) {
+    logger.error('[Internal] 同步 allowDelivery 失败', { merchantId, allowDelivery, error: error.message });
     res.status(500).json({ error: error.message });
   }
 });
@@ -479,9 +639,6 @@ router.post('/orders/:orderId/cancel', internalAuth, async (req: Request, res: R
     res.status(500).json({ error: error.message });
   }
 });
-
-// 从订单快照创建订单
-router.post('/orders/from-snapshot', internalAuth, orderController.createFromSnapshot);
 
 /**
  * 对账查询接口 - 返回指定时间段内的订单支付摘要

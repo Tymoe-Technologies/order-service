@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import orderRoutes from './order.routes';
+import deliveryConfirmationRoutes from './delivery-confirmation.routes';
 import printRoutes from './print.routes';
 import noteRoutes from './note.routes';
 import statisticsRoutes from './statistics.routes';
@@ -26,6 +27,7 @@ const router = Router();
 router.use('/orders', orderRoutes);
 router.use('/orders', printRoutes);
 router.use('/orders', noteRoutes);
+router.use('/orders', deliveryConfirmationRoutes);
 router.use('/statistics', statisticsRoutes);
 router.use('/sales-channels', salesChannelRoutes);
 router.use('/', merchantConfigRoutes);
@@ -53,6 +55,7 @@ const requireOrdersEdit = requireModulePermission('orders', 'edit');
 
 // ========== Consumer 端点（Consumer JWT 认证） ==========
 router.get('/consumer/orders', authenticate, orderController.getConsumerOrders.bind(orderController));
+router.get('/consumer/orders/:orderId', authenticate, orderController.getConsumerOrderDetail.bind(orderController));
 
 // ========== 预约订单端点 ==========
 // GET  /orders/scheduled?date=YYYY-MM-DD  — 查询当日预约单（需要认证）

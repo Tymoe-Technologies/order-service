@@ -269,40 +269,6 @@ export class OrderController {
   }
 
   /**
-   * 从快照创建订单（内部端点，Finance Service Webhook 调用）
-   * POST /internal/orders/from-snapshot
-   */
-  async createFromSnapshot(req: Request, res: Response, next: NextFunction) {
-    try {
-      const merchantId = req.headers['x-merchant-id'] as string;
-      if (!merchantId) {
-        return res.status(400).json({
-          success: false,
-          error: 'Missing X-Merchant-Id header',
-        });
-      }
-
-      const { snapshotId, paymentIntentId } = req.body;
-      if (!snapshotId || !paymentIntentId) {
-        return res.status(400).json({
-          success: false,
-          error: 'Missing required fields: snapshotId, paymentIntentId',
-        });
-      }
-
-      const order = await orderService.createOrderFromSnapshot({
-        snapshotId,
-        paymentIntentId,
-        merchantId,
-      });
-
-      successResponse(res, order, 201);
-    } catch (error) {
-      next(error);
-    }
-  }
-
-  /**
    * 通过 paymentIntentId 查询订单（前端轮询）
    * GET /web/by-payment/:paymentIntentId
    */
@@ -363,36 +329,6 @@ export class OrderController {
 
       const order = await orderService.createTemporaryOrderFromSnapshot({
         snapshotId,
-        merchantId,
-      });
-
-      successResponse(res, order, 201);
-    } catch (error) {
-      next(error);
-    }
-  }
-
-  async createOrderVerified(req: Request, res: Response, next: NextFunction) {
-    try {
-      const merchantId = req.headers['x-merchant-id'] as string;
-      if (!merchantId) {
-        return res.status(400).json({
-          success: false,
-          error: 'Missing X-Merchant-Id header',
-        });
-      }
-
-      const { snapshotId, paymentIntentId } = req.body;
-      if (!snapshotId || !paymentIntentId) {
-        return res.status(400).json({
-          success: false,
-          error: 'Missing required fields: snapshotId, paymentIntentId',
-        });
-      }
-
-      const order = await orderService.createOrderVerified({
-        snapshotId,
-        paymentIntentId,
         merchantId,
       });
 
@@ -506,6 +442,22 @@ export class OrderController {
       const limit = req.query.limit ? parseInt(req.query.limit as string) : 10;
 
       const result = await orderService.getConsumerOrders(consumerId, { page, limit });
+      successResponse(res, result);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * 消费者查询单个订单详情（Consumer JWT 认证）
+   * GET /consumer/orders/:orderId
+   */
+  async getConsumerOrderDetail(req: Request, res: Response, next: NextFunction) {
+    try {
+      const consumerId = req.user!.userId;
+      const { orderId } = req.params;
+
+      const result = await orderService.getConsumerOrderDetail(orderId, consumerId);
       successResponse(res, result);
     } catch (error) {
       next(error);

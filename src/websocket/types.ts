@@ -109,6 +109,8 @@ export interface WSDeliveryOrderMessage extends WSMessage {
     dropoffNotes?: string;  // 单元号/buzzer/配送指引（给骑手）
     items: Array<{ name: string; quantity: number }>;
     createdAt: string;
+    pickupNumber?: number;   // 取餐号原始数字
+    pickupDisplay?: string;  // 取餐号展示文本（带渠道前缀，如 P-42）
   };
 }
 
@@ -116,6 +118,7 @@ export interface WSDeliveryOrderMessage extends WSMessage {
 export interface WSDeliveryStatusUpdateMessage extends WSMessage {
   type: 'DELIVERY_STATUS_UPDATE';
   deliveryId: string;
+  orderId?: string;
   status: string;           // pending, pickup, dropoff, delivered, canceled, returned
   courier?: {
     name?: string;
@@ -126,6 +129,10 @@ export interface WSDeliveryStatusUpdateMessage extends WSMessage {
   dropoff_eta?: string;
   pickup_eta?: string;
   tracking_url?: string;
+  // Uber Direct 取消/无法送达原因，仅在 status 为 canceled/returned 时可能出现
+  cancelation_reason?: { primary_reason?: string; secondary_reason?: string };
+  undeliverable_reason?: string;
+  undeliverable_action?: string;
 }
 
 // Server → POS: 第三方平台来单（Uber Eats 等）

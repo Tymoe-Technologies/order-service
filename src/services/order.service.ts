@@ -4,11 +4,11 @@ import { AppError } from '../middleware/errorHandler';
 import logger from '../utils/logger';
 import { assertCreditAvailable } from './credit.service';
 import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
-import Stripe from 'stripe';
 import { eventBus } from '../events';
 import { getMemberIdByConsumerId, validateGrantedRewardForMember } from '../utils/member-client';
 import { broadcastOrderStatusChanged } from '../websocket/print-task-dispatcher';
 import organizationService from './organization.service';
+import { getRefundsByOrderId } from './refund.service';
 
 const FINANCE_SERVICE_URL = process.env.FINANCE_SERVICE_URL || 'http://localhost:7007';
 const INTERNAL_SERVICE_KEY = process.env.INTERNAL_SERVICE_KEY || '';
@@ -740,6 +740,23 @@ export class OrderService {
       );
     }
 
+    // Uber Direct 配送单（WEB 来源的 DELIVERY 订单）不允许通过这个通用状态接口离开 PENDING——
+    // 必须先经 delivery-confirmation.service.ts 的 confirmDeliveryOrder 真正建好 Uber 配送单，
+    // 状态和 deliveryConfirmedAt 才会一起联动改成 CONFIRMED。否则会出现订单状态显示"已接单"
+    // 但实际从未建过配送单的脱节（uber-service/uber 平台侧完全不知道这笔订单）
+    if (
+      fromStatus === 'PENDING' &&
+      order.orderType === 'DELIVERY' &&
+      order.orderSource === 'WEB' &&
+      !order.deliveryConfirmedAt
+    ) {
+      throw new AppError(
+        400,
+        'DELIVERY_NOT_CONFIRMED',
+        '该配送订单尚未创建 Uber Direct 配送单，请使用"接单"操作而不是直接改状态'
+      );
+    }
+
     const now = new Date();
 
     // 根据目标状态设置对应的时间戳
@@ -817,17 +834,36 @@ export class OrderService {
 
     const now = new Date();
 
-    // 直接跳到 CONFIRMED（跳过 PENDING），无需商家接单
+    // 预约配送单（Uber Direct）不能直接跳到 CONFIRMED——必须先真正建好配送单才行，
+    // 释放到 PENDING，走跟非预约配送单一样的接单流程（弹窗/订单中心/自动接单 job）；
+    // 其余类型（自取/堂食）维持原逻辑，直接跳到 CONFIRMED，无需商家接单
+    const deliveryDue = due.filter(o => o.orderType === 'DELIVERY');
+    const otherDue = due.filter(o => o.orderType !== 'DELIVERY');
+    const AUTO_CONFIRM_DEADLINE_MINUTES = Number(process.env.AUTO_CONFIRM_DEADLINE_MINUTES) || 15;
+    const deliveryDeadline = new Date(now.getTime() + AUTO_CONFIRM_DEADLINE_MINUTES * 60 * 1000);
+
     await prisma.$transaction([
-      prisma.order.updateMany({
-        where: { id: { in: due.map(o => o.id) } },
-        data: {
-          status: 'CONFIRMED',
-          releasedAt: now,
-          scheduledConfirmedAt: now,
-        },
-      }),
-      ...due.map(o =>
+      ...(otherDue.length > 0 ? [
+        prisma.order.updateMany({
+          where: { id: { in: otherDue.map(o => o.id) } },
+          data: {
+            status: 'CONFIRMED',
+            releasedAt: now,
+            scheduledConfirmedAt: now,
+          },
+        }),
+      ] : []),
+      ...(deliveryDue.length > 0 ? [
+        prisma.order.updateMany({
+          where: { id: { in: deliveryDue.map(o => o.id) } },
+          data: {
+            status: 'PENDING',
+            releasedAt: now,
+            deliveryConfirmDeadlineAt: deliveryDeadline,
+          },
+        }),
+      ] : []),
+      ...otherDue.map(o =>
         prisma.orderStatusHistory.create({
           data: {
             orderId: o.id,
@@ -838,15 +874,27 @@ export class OrderService {
           },
         })
       ),
+      ...deliveryDue.map(o =>
+        prisma.orderStatusHistory.create({
+          data: {
+            orderId: o.id,
+            fromStatus: 'SCHEDULED',
+            toStatus: 'PENDING',
+            reason: '系统自动释放：预约时间临近，等待接单（需先创建 Uber 配送单）',
+            changedAt: now,
+          },
+        })
+      ),
     ]);
 
-    logger.info(`[ScheduledOrders] Released ${due.length} scheduled orders → CONFIRMED`);
+    logger.info(`[ScheduledOrders] Released ${otherDue.length} → CONFIRMED, ${deliveryDue.length} delivery → PENDING`);
 
     // 为每个释放的订单触发打印 + 广播状态变更
     const { generatePrintTasksForOrder } = await import('../websocket/print-task-generator');
     const { dispatchPrintTasks } = await import('../websocket/print-task-dispatcher');
+    const { broadcastDeliveryOrder } = await import('../websocket/print-task-dispatcher');
 
-    for (const order of due) {
+    for (const order of otherDue) {
       try {
         // 触发打印
         const tasks = await generatePrintTasksForOrder(
@@ -869,6 +917,31 @@ export class OrderService {
         status: 'CONFIRMED',
         previousStatus: 'SCHEDULED',
         tenantId: order.tenantId,
+      });
+    }
+
+    // 预约配送单释放到 PENDING：推一次接单弹窗通知（跟非预约配送单支付成功时的推送同一形状），
+    // 不打印（配送单备餐完成才打印，不是接单这一步）
+    for (const order of deliveryDue) {
+      const deliveryAddress = order.deliveryAddress as any;
+      if (!deliveryAddress) {
+        logger.warn('[ScheduledOrders] 预约配送单缺少配送地址，跳过接单通知', { orderId: order.id });
+        continue;
+      }
+      const items = (order.orderItems || []).map((item: any) => ({
+        name: item.itemName,
+        quantity: item.quantity,
+      }));
+      broadcastDeliveryOrder(order.tenantId, {
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        tenantId: order.tenantId,
+        customerName: order.customerName || '',
+        customerPhone: order.customerPhone || '',
+        dropoffAddress: deliveryAddress.fullAddress,
+        items,
+        createdAt: now.toISOString(),
+        pickupNumber: order.pickupNumber ?? undefined,
       });
     }
 
@@ -1419,224 +1492,6 @@ export class OrderService {
   }
 
   /**
-   * 从快照创建订单（Webhook 调用）
-   * 实现幂等性：使用 paymentIntentId 作为唯一约束
-   */
-  async createOrderFromSnapshot(data: {
-    snapshotId: string;
-    paymentIntentId: string;
-    merchantId: string;
-  }) {
-    // 提前获取快照中的 consumerId 和 scheduledAt（事务外执行，避免持锁）
-    const snapshotPreData = await prisma.checkoutSnapshot.findUnique({
-      where: { id: data.snapshotId },
-      select: { consumerId: true, scheduledAt: true },
-    });
-    const consumerId = (snapshotPreData as any)?.consumerId as string | undefined;
-    const scheduledAt = (snapshotPreData as any)?.scheduledAt as Date | null;
-
-    // Web 订单建单时支付已完成（Stripe Webhook 触发），直接生成取餐号
-    // 预约单按取餐日期分配取餐码，避免和取餐当天的其他订单序号冲突
-    let { orderNumber } = await this.generateOrderNumber(data.merchantId, 'WEB');
-    let { pickupNumber } = await this.generatePickupNumber(data.merchantId, 'WEB', scheduledAt ?? undefined);
-    const memberId = consumerId ? await getMemberIdByConsumerId(consumerId) : null;
-
-    let result: any;
-    for (let attempt = 0; ; attempt++) {
-      try {
-        result = await this._runCreateOrderFromSnapshotTx(data, orderNumber, pickupNumber, memberId || undefined);
-        break;
-      } catch (e) {
-        if (attempt < 4 && this.isOrderNumberConflict(e)) {
-          logger.warn('createOrderFromSnapshot 订单号碰撞，重新生成后缀', { attempt, orderNumber });
-          orderNumber = this.buildCandidateOrderNumber(data.merchantId, 'WEB');
-          continue;
-        }
-        throw e;
-      }
-    }
-
-    // 事务成功后发出事件（幂等性返回的旧订单不 emit）
-    if (result.isNew) {
-      eventBus.emit({
-        type: 'ORDER_CREATED_FROM_SNAPSHOT',
-        eventId: uuidv4(),
-        timestamp: new Date(),
-        tenantId: data.merchantId,
-        orderId: result.order.id,
-        orderNumber: result.order.orderNumber,
-        snapshotId: data.snapshotId,
-        snapshotItems: result.snapshotItems,
-        order: result.order,
-      });
-
-      // 有积分兑换折扣时通知 finance-service 记账
-      const discountAmount: number = result.order.discountAmount ?? 0;
-      if (discountAmount > 0 && result.order.discountType === 'LOYALTY_REDEMPTION') {
-        const grantedRewardId = result.order.discountReason?.replace('GrantedReward:', '');
-        notifyLoyaltyDiscount({
-          tenantId: data.merchantId,
-          orderId: result.order.id,
-          discountAmount,
-          grantedRewardId,
-        }).catch(() => {});
-      }
-    }
-
-    return result.order;
-  }
-
-  private async _runCreateOrderFromSnapshotTx(
-    data: { snapshotId: string; paymentIntentId: string; merchantId: string },
-    orderNumber: string,
-    pickupNumber: number,
-    memberId?: string,
-  ) {
-    return await prisma.$transaction(async (tx) => {
-      // 1. 幂等性检查：是否已有该 paymentIntentId 的订单
-      const existingOrder = await tx.order.findUnique({
-        where: { paymentIntentId: data.paymentIntentId },
-      });
-      if (existingOrder) {
-        logger.info(`[OrderService] Order already exists for paymentIntentId: ${data.paymentIntentId}`);
-        return { order: existingOrder, isNew: false, snapshotItems: [] };
-      }
-
-      // 2. 获取快照
-      const snapshot = await tx.checkoutSnapshot.findUnique({
-        where: { id: data.snapshotId },
-      });
-      if (!snapshot) {
-        throw new AppError('Snapshot not found', 404);
-      }
-      if (snapshot.status === 'USED') {
-        // 快照已使用，查找对应订单返回
-        const order = await tx.order.findUnique({
-          where: { id: snapshot.orderId! },
-        });
-        if (order) {
-          logger.info(`[OrderService] Snapshot already used, returning existing order: ${order.id}`);
-          return { order, isNew: false, snapshotItems: [] };
-        }
-      }
-
-      // 3. 检查快照是否过期
-      if (snapshot.expiresAt < new Date()) {
-        throw new AppError('Snapshot expired, please place order again', 400);
-      }
-
-      // 4. 解析快照数据
-      const items = snapshot.items as any;
-      const pricing = snapshot.pricing as any;
-
-      // 4.5 配送起送金额校验
-      if (snapshot.orderType === 'DELIVERY') {
-        const merchantConfig = await tx.merchantOnlineOrderConfig.findUnique({
-          where: { merchantId: data.merchantId },
-          select: { minOrderAmount: true },
-        });
-        const minOrder = merchantConfig?.minOrderAmount ?? 0;
-        if (minOrder > 0 && pricing.subtotal < minOrder) {
-          throw new AppError(
-            400,
-            'BELOW_DELIVERY_MINIMUM',
-            `Order amount $${(pricing.subtotal / 100).toFixed(2)} is below delivery minimum $${(minOrder / 100).toFixed(2)}`
-          );
-        }
-      }
-
-      // 5. 创建订单
-      // 预约单（snapshot.scheduledAt 有值）→ SCHEDULED，支付成功后等到预约时间再释放
-      // Web 自取单：叫号开启 → CONFIRMED（上叫号屏），叫号关闭 → COMPLETED（支付即完成）
-      // 配送单 → CONFIRMED（走配送流程，不上叫号屏）
-      const isScheduled = !!(snapshot as any).scheduledAt;
-      const isDelivery = snapshot.orderType === 'DELIVERY';
-      const pickupConfig = await tx.pickupNumberConfig.findUnique({ where: { tenantId: data.merchantId } });
-      const queueDisplayOn = pickupConfig?.queueDisplayEnabled ?? false;
-      let initialStatus: string;
-      let completedAt: Date | undefined;
-      if (isScheduled) {
-        initialStatus = 'SCHEDULED';
-      } else if (isDelivery) {
-        initialStatus = 'CONFIRMED';
-      } else if (queueDisplayOn) {
-        // 自取单 + 叫号开启：停在 CONFIRMED 上叫号屏，等店员叫号
-        initialStatus = 'CONFIRMED';
-      } else {
-        // 自取单 + 叫号关闭：支付即完成
-        initialStatus = 'COMPLETED';
-        completedAt = new Date();
-      }
-
-      const order = await tx.order.create({
-        data: {
-          id: uuidv7(), // 与 POS 路径一致，订单主键用 UUID v7（时间有序）
-          tenantId: data.merchantId,
-          orderNumber,
-          pickupNumber,
-          orderType: snapshot.orderType,
-          orderSource: 'WEB',
-          status: initialStatus,
-          isScheduled,
-          scheduledAt: (snapshot as any).scheduledAt ?? null,
-          consumerId: (snapshot as any).consumerId || undefined,
-          memberId: memberId || undefined,
-          customerName: snapshot.customerName,
-          customerPhone: snapshot.customerPhone,
-          customerEmail: (snapshot as any).customerEmail || undefined,
-          subtotal: pricing.subtotal,
-          taxAmount: pricing.taxAmount,
-          deliveryFee: pricing.deliveryFee || 0,
-          uberDeliveryFee: pricing.uberDeliveryFee || 0,
-          tipAmount: pricing.tipAmount,
-          platformFee: pricing.platformFee,
-          totalAmount: pricing.total,
-          discountAmount: pricing.discountAmount || 0,
-          discountType: pricing.grantedRewardId ? 'LOYALTY_REDEMPTION' : undefined,
-          discountReason: pricing.grantedRewardId ? `GrantedReward:${pricing.grantedRewardId}` : undefined,
-          paymentStatus: 'PAID',
-          paymentMethod: 'card',
-          paymentIntentId: data.paymentIntentId,
-          notes: snapshot.notes,
-          customLabelData: (snapshot as any).customLabelData ?? undefined,
-          deliveryAddress: (snapshot as any).deliveryAddress ?? undefined,
-          createdBy: data.merchantId,
-          completedAt: completedAt ?? null,
-          orderItems: {
-            create: items.map((item: any) => ({
-              itemId: item.itemId,
-              itemName: item.itemName,
-              quantity: item.quantity,
-              unitPrice: item.unitPrice,
-              totalPrice: item.unitPrice * item.quantity,
-              modifiers: null,  // 不再写 JSON，改用关系表
-            })),
-          },
-        },
-        include: {
-          orderItems: { include: { orderItemModifiers: true } },
-        },
-      });
-
-      // 7. 标记快照为已使用
-      await tx.checkoutSnapshot.update({
-        where: { id: data.snapshotId },
-        data: {
-          status: 'USED',
-          orderId: order.id,
-          paymentIntentId: data.paymentIntentId,
-        },
-      });
-
-      logger.info(`[OrderService] Order created from snapshot: ${order.id}`);
-
-      // 返回额外信息供事务外 emit 使用
-      return { order, isNew: true, snapshotItems: items };
-    });
-  }
-
-
-  /**
    * 通过 paymentIntentId 查询订单
    */
   async getOrderByPaymentIntent(paymentIntentId: string, merchantId: string) {
@@ -1813,39 +1668,6 @@ export class OrderService {
     };
   }
 
-  async createOrderVerified(data: {
-    snapshotId: string;
-    paymentIntentId: string;
-    merchantId: string;
-  }) {
-    // 1. 调用 Stripe API 验证支付状态
-    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '', {
-      apiVersion: '2024-12.acacia',
-    });
-    const paymentIntent = await stripe.paymentIntents.retrieve(data.paymentIntentId);
-
-    if (paymentIntent.status !== 'succeeded') {
-      throw new AppError('Payment not verified', 400);
-    }
-
-    // 2. 验证 metadata 中的 snapshotId 匹配
-    if (paymentIntent.metadata.snapshotId !== data.snapshotId) {
-      throw new AppError('Snapshot mismatch', 400);
-    }
-
-    // 3. 验证 merchantId 匹配
-    if (paymentIntent.metadata.merchantId !== data.merchantId) {
-      throw new AppError('Merchant mismatch', 400);
-    }
-
-    // 4. 创建订单（复用幂等性逻辑）
-    return this.createOrderFromSnapshot({
-      snapshotId: data.snapshotId,
-      paymentIntentId: data.paymentIntentId,
-      merchantId: data.merchantId,
-    });
-  }
-
   /**
    * 更新订单支付状态（服务间调用，来自 Finance Service）
    * PATCH /api/order/v1/orders/:orderId/payment-status
@@ -1969,12 +1791,19 @@ export class OrderService {
               (order.orderSource === 'WEB' && order.orderType !== 'DELIVERY' && !order.isScheduled)
             );
 
+          // Uber Direct 配送单：支付成功后必须停在 PENDING 等接单，
+          // 不能在这里自动推到 CONFIRMED——CONFIRMED 只能由 confirmDeliveryOrder 在
+          // 真正建好 Uber 配送单后联动写入（否则 POS 界面会显示"备餐中"但实际没人接过单，
+          // 接单按钮也因为状态不是 PENDING 而消失，订单卡死）
+          const isUberDelivery = order.orderSource === 'WEB' && order.orderType === 'DELIVERY';
+
           if (autoComplete) {
             updateData.status = 'COMPLETED';
             updateData.completedAt = new Date();
-          } else {
+          } else if (!isUberDelivery) {
             updateData.status = 'CONFIRMED';
           }
+          // isUberDelivery: 不改 status，保持 PENDING
         }
         // 生成取餐号（仅在首次标 PAID 且尚未分配时）
         if (!order.pickupNumber) {
@@ -2290,6 +2119,86 @@ export class OrderService {
       limit,
       totalPages: Math.ceil(total / limit),
     };
+  }
+
+  /**
+   * 消费者查询单个订单详情（Consumer JWT 认证）
+   * 校验订单归属，附带商品规格/加料明细 + 退款记录
+   */
+  async getConsumerOrderDetail(orderId: string, consumerId: string) {
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      select: {
+        id: true,
+        tenantId: true,
+        consumerId: true,
+        orderNumber: true,
+        pickupNumber: true,
+        orderType: true,
+        orderSource: true,
+        status: true,
+        subtotal: true,
+        taxAmount: true,
+        discountAmount: true,
+        serviceFee: true,
+        deliveryFee: true,
+        platformFee: true,
+        tipAmount: true,
+        totalAmount: true,
+        discountType: true,
+        discountReason: true,
+        paymentStatus: true,
+        paymentMethod: true,
+        paidAt: true,
+        customerName: true,
+        customerPhone: true,
+        notes: true,
+        isScheduled: true,
+        scheduledAt: true,
+        createdAt: true,
+        confirmedAt: true,
+        completedAt: true,
+        cancelledAt: true,
+        deliveryAddress: true,
+        orderItems: {
+          select: {
+            id: true,
+            itemId: true,
+            itemName: true,
+            quantity: true,
+            unitPrice: true,
+            totalPrice: true,
+            discountAmount: true,
+            discountReason: true,
+            specialNotes: true,
+            orderItemModifiers: {
+              select: {
+                id: true,
+                groupName: true,
+                optionName: true,
+                unitPrice: true,
+                quantity: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!order) {
+      throw new AppError('订单不存在', 404);
+    }
+    if (order.consumerId !== consumerId) {
+      // 不透露"订单存在但不属于你"，统一按不存在处理
+      throw new AppError('订单不存在', 404);
+    }
+
+    const [storeTimezone, refunds] = await Promise.all([
+      organizationService.getStoreTimezone(order.tenantId),
+      getRefundsByOrderId(order.id),
+    ]);
+
+    return { ...order, storeTimezone, refunds };
   }
 
 }

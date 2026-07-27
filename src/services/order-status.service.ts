@@ -94,6 +94,23 @@ export class OrderStatusService {
       }
     }
 
+    // 2.2 Uber Direct 配送单（WEB 来源的 DELIVERY 订单）不允许通过这个通用状态接口离开 PENDING——
+    // 必须先经 delivery-confirmation.service.ts 的 confirmDeliveryOrder 真正建好 Uber 配送单，
+    // 状态和 deliveryConfirmedAt 才会一起联动改成 CONFIRMED，否则会出现"订单状态显示已接单，
+    // 但从未真正建过配送单"的脱节（这正是这次要修的漏单问题的根源之一）
+    if (
+      order.status === 'PENDING' &&
+      order.orderType === 'DELIVERY' &&
+      order.orderSource === 'WEB' &&
+      !order.deliveryConfirmedAt
+    ) {
+      throw new AppError(
+        400,
+        'DELIVERY_NOT_CONFIRMED',
+        '该配送订单尚未创建 Uber Direct 配送单，请使用"接单"操作而不是直接改状态'
+      );
+    }
+
     // 3. 准备状态时间戳字段
     const statusTimestamp = this.getStatusTimestampField(newStatus);
 

@@ -7,6 +7,7 @@ import swaggerUi from 'swagger-ui-express';
 import swaggerJsdoc from 'swagger-jsdoc';
 import routes from './routes';
 import internalRoutes from './routes/internal';
+import twilioVoiceRoutes from './routes/twilio-voice.routes';
 import { errorHandler } from './middleware/errorHandler';
 import { validateMerchantId } from './middleware/validateMerchantId';
 import logger from './utils/logger';
@@ -164,6 +165,9 @@ app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 // 内部服务接口（服务间调用，不需要 merchantId 验证）
 app.use('/internal', internalRoutes);
+
+// Twilio 语音回调（公网可访问，不走 merchantId/租户校验，用共享 token 保护，见 alert.service.ts）
+app.use('/public/twilio', twilioVoiceRoutes);
 
 // API Routes - 先应用商家 ID 验证中间件 (async 中间件)
 app.use('/api/order/v1', (req, res, next) => {
