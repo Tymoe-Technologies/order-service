@@ -1,12 +1,14 @@
 import { Router } from 'express';
 import salesChannelController from '../controllers/sales-channel.controller';
 import { authMiddleware } from '../middleware/auth';
+import { requireModulePermission } from '../middleware/requirePermission';
 import { rateLimitMiddleware } from '../middleware/rateLimiter';
 
 const router = Router();
 
 // 所有路由都需要认证
 router.use(authMiddleware);
+router.use(requireModulePermission('salesChannels'));
 
 // 获取销售渠道列表
 router.get('/', rateLimitMiddleware, salesChannelController.getSalesChannels);

@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import printBrandController from '../controllers/print-brand.controller';
 import { authenticate } from '../middleware/auth';
+import { requireModulePermission } from '../middleware/requirePermission';
 import { uploadSingleImage } from '../middleware/upload';
 
 const router = Router();
 
 router.use(authenticate);
+router.use(requireModulePermission('printSettings'));
 
 // 获取品牌配置（含 Logo URL）
 router.get('/', printBrandController.getBrandProfile);

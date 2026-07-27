@@ -10,6 +10,8 @@ import { initWebSocketServer, closeWebSocketServer } from './websocket/ws-server
 import { initQueueDisplayServer } from './websocket/queue-display-server';
 import { registerAllHandlers } from './events';
 import { startScheduledOrderRelease, stopScheduledOrderRelease } from './jobs/scheduled-order-release';
+import { startDeliveryConfirmationWatchdog, stopDeliveryConfirmationWatchdog } from './jobs/delivery-confirmation-watchdog';
+import { startAutoDeliveryConfirmation, stopAutoDeliveryConfirmation } from './jobs/auto-delivery-confirmation';
 
 // Load environment variables
 const envFile = process.env.NODE_ENV === 'production' ? '.env.production' : '.env.development';
@@ -30,6 +32,12 @@ const gracefulShutdown = async () => {
   try {
     // 停止预约单释放定时器
     stopScheduledOrderRelease();
+
+    // 停止配送订单确认超时 watchdog
+    stopDeliveryConfirmationWatchdog();
+
+    // 停止 15 分钟自动接单定时器
+    stopAutoDeliveryConfirmation();
 
     // 关闭 WebSocket 服务
     await closeWebSocketServer();
@@ -109,6 +117,16 @@ const startServer = async () => {
     // ========== 启动预约单释放定时器 ==========
     // 取代 DB pg_cron(release-scheduled-orders)：到点自动 CONFIRMED + 打印 + 广播
     startScheduledOrderRelease();
+
+    // ========== 启动配送订单确认超时 watchdog ==========
+    // 支付成功 15 分钟后仍未创建 Uber 配送单（deliveryConfirmedAt 为 null）就告警，
+    // 兜底"接单弹窗因锁屏/未登录等原因错过、员工从未点击确认"的场景
+    startDeliveryConfirmationWatchdog();
+
+    // ========== 启动 15 分钟自动接单定时器 ==========
+    // 支付成功 15 分钟内员工未确认时，系统自动用默认备餐时间建配送单；
+    // 建单失败则自动取消订单 + 退款 + Twilio 告警（见 auto-delivery-confirmation.ts）
+    startAutoDeliveryConfirmation();
   } catch (error) {
     logger.error('Failed to start server:', error);
     process.exit(1);

@@ -9,7 +9,6 @@ export interface JwtPayload {
   tenantId: string;  // 组织ID (Organization ID) - 用于数据隔离
   email?: string;
   userType?: string;
-  productType?: string;
   organizationIds?: string[];
   permissions?: string[];
   deviceId?: string | null;
@@ -66,7 +65,6 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
       tenantId: orgIdFromHeader || decoded.organizationId || (decoded.organizationIds && decoded.organizationIds[0]),
       email: decoded.email,
       userType: decoded.userType,
-      productType: decoded.productType,
       organizationIds: decoded.organizationIds,
       permissions: decoded.permissions,
       deviceId: decoded.deviceId,

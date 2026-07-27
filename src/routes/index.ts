@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import orderRoutes from './order.routes';
+import deliveryConfirmationRoutes from './delivery-confirmation.routes';
 import printRoutes from './print.routes';
 import noteRoutes from './note.routes';
 import statisticsRoutes from './statistics.routes';
@@ -26,6 +27,7 @@ const router = Router();
 router.use('/orders', orderRoutes);
 router.use('/orders', printRoutes);
 router.use('/orders', noteRoutes);
+router.use('/orders', deliveryConfirmationRoutes);
 router.use('/statistics', statisticsRoutes);
 router.use('/sales-channels', salesChannelRoutes);
 router.use('/', merchantConfigRoutes);
@@ -45,16 +47,21 @@ router.use('/checkout-snapshots', checkoutSnapshotRoutes);
 // 注意：以下路由定义重复于 order.routes.ts，但为了正确的路径，必须在这里重新定义
 import orderController from '../controllers/order.controller';
 import { authenticate } from '../middleware/auth';
+import { requireModulePermission } from '../middleware/requirePermission';
 import prisma from '../utils/prisma';
+
+const requireOrdersView = requireModulePermission('orders', 'view');
+const requireOrdersEdit = requireModulePermission('orders', 'edit');
 
 // ========== Consumer 端点（Consumer JWT 认证） ==========
 router.get('/consumer/orders', authenticate, orderController.getConsumerOrders.bind(orderController));
+router.get('/consumer/orders/:orderId', authenticate, orderController.getConsumerOrderDetail.bind(orderController));
 
 // ========== 预约订单端点 ==========
 // GET  /orders/scheduled?date=YYYY-MM-DD  — 查询当日预约单（需要认证）
 // POST /orders/scheduled/release          — 释放到期预约单（需要认证，也可由定时任务内部调用）
-router.get('/orders/scheduled', authenticate, orderController.getScheduledOrders.bind(orderController));
-router.post('/orders/scheduled/release', authenticate, orderController.releaseScheduledOrders.bind(orderController));
+router.get('/orders/scheduled', authenticate, requireOrdersView, orderController.getScheduledOrders.bind(orderController));
+router.post('/orders/scheduled/release', authenticate, requireOrdersEdit, orderController.releaseScheduledOrders.bind(orderController));
 
 router.get('/web/by-payment/:paymentIntentId', orderController.getByPaymentIntent);
 router.get('/web/orders/:orderId', orderController.getOrderById);

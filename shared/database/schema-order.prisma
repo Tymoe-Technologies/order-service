@@ -68,6 +68,11 @@ model Order {
   customLabelData Json?  @map("custom_label_data") @db.Json  // 顾客自定义标签数据（WEB 订单）
   deliveryAddress Json?  @map("delivery_address") @db.Json   // 配送地址（DELIVERY 类型时）
   deliveryConfirmedAt DateTime? @map("delivery_confirmed_at")  // POS 确认备餐时间并创建 Uber 配送单的时间（null = 待确认）
+  deliveryConfirmedBy String? @map("delivery_confirmed_by") @db.VarChar(20) // 'MANUAL' | 'AUTO'，谁触发的确认
+  deliveryPrepMinutes Int? @map("delivery_prep_minutes")       // 备餐时间（分钟），人工选择或系统默认值
+  uberDeliveryId String? @map("uber_delivery_id") @db.VarChar(255)  // Uber Direct 配送单 ID（回填自 uber-service 响应）
+  deliveryConfirmDeadlineAt DateTime? @map("delivery_confirm_deadline_at") // = paidAt + 15min，供自动接单 job 扫描
+  autoConfirmProcessingAt DateTime? @map("auto_confirm_processing_at")    // 自动接单 job 认领标记，防止并发 tick 重复处理
 
   // 第三方平台订单（Uber Eats 等）
   externalOrderId   String?  @map("external_order_id") @db.VarChar(255)  // 第三方平台订单 ID
@@ -121,6 +126,7 @@ model Order {
   @@index([consumerId])              // "我的订单"查询
   @@index([channelConfigId])         // 渠道报表查询
   @@index([isScheduled, scheduledAt]) // 预约订单定时释放查询
+  @@index([orderType, deliveryConfirmedAt, deliveryConfirmDeadlineAt]) // watchdog / 自动接单 job 扫描待确认配送订单
   @@map("orders")
 }
 

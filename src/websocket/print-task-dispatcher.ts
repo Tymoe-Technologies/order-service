@@ -150,11 +150,15 @@ export function broadcastDeliveryStatusUpdate(
   const msg: WSDeliveryStatusUpdateMessage = {
     type: 'DELIVERY_STATUS_UPDATE',
     deliveryId: update.deliveryId,
+    orderId: update.orderId,
     status: update.status,
     courier: update.courier,
     dropoff_eta: update.dropoff_eta,
     pickup_eta: update.pickup_eta,
     tracking_url: update.tracking_url,
+    cancelation_reason: update.cancelation_reason,
+    undeliverable_reason: update.undeliverable_reason,
+    undeliverable_action: update.undeliverable_action,
     timestamp: new Date().toISOString(),
   };
 
