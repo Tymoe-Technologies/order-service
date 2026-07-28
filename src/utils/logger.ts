@@ -1,4 +1,5 @@
 import winston from 'winston';
+import DailyRotateFile from 'winston-daily-rotate-file';
 import { getRequestId } from './requestContext';
 
 const logLevel = process.env.LOG_LEVEL || 'info';
@@ -22,8 +23,21 @@ const logger = winston.createLogger({
   ),
   defaultMeta: { service: process.env.SERVICE_NAME || 'order-service' },
   transports: [
-    new winston.transports.File({ filename: 'logs/error.log', level: 'error' }),
-    new winston.transports.File({ filename: 'logs/combined.log' }),
+    // 按天轮转 + 单文件最大 20MB 强制切分；超出总量上限自动删最老的一份——
+    // 防止日志文件无限增长（此前 combined.log 曾长到数十 MB 从未清理）
+    new DailyRotateFile({
+      filename: 'logs/error-%DATE%.log',
+      datePattern: 'YYYY-MM-DD',
+      level: 'error',
+      maxSize: '20m',
+      maxFiles: '30d',
+    }),
+    new DailyRotateFile({
+      filename: 'logs/combined-%DATE%.log',
+      datePattern: 'YYYY-MM-DD',
+      maxSize: '20m',
+      maxFiles: '14d',
+    }),
   ],
 });
 
