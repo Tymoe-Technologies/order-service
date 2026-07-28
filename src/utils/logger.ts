@@ -1,6 +1,7 @@
 import winston from 'winston';
 import DailyRotateFile from 'winston-daily-rotate-file';
 import { getRequestId } from './requestContext';
+import { scrubPII } from './piiScrub';
 
 const logLevel = process.env.LOG_LEVEL || 'info';
 
@@ -18,25 +19,26 @@ const logger = winston.createLogger({
     injectRequestId(),
     winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
     winston.format.errors({ stack: true }),
+    scrubPII(), // 落盘前打码手机号/邮箱（订单里的 customerPhone/customerEmail 等）
     winston.format.splat(),
     winston.format.json()
   ),
   defaultMeta: { service: process.env.SERVICE_NAME || 'order-service' },
   transports: [
-    // 按天轮转 + 单文件最大 20MB 强制切分；超出总量上限自动删最老的一份——
-    // 防止日志文件无限增长（此前 combined.log 曾长到数十 MB 从未清理）
+    // 本地文件只是"Loki 采集前的缓冲 + Loki 不可达时的应急兜底"，长期存储/检索交给 Loki
+    // （它的 retention 独立可调，不占应用服务器磁盘），所以本地只留很短时间。
     new DailyRotateFile({
       filename: 'logs/error-%DATE%.log',
       datePattern: 'YYYY-MM-DD',
       level: 'error',
       maxSize: '20m',
-      maxFiles: '30d',
+      maxFiles: '3d',
     }),
     new DailyRotateFile({
       filename: 'logs/combined-%DATE%.log',
       datePattern: 'YYYY-MM-DD',
       maxSize: '20m',
-      maxFiles: '14d',
+      maxFiles: '2d',
     }),
   ],
 });
