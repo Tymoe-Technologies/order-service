@@ -1,10 +1,20 @@
 import winston from 'winston';
+import { getRequestId } from './requestContext';
 
 const logLevel = process.env.LOG_LEVEL || 'info';
+
+// 自动把当前请求的 requestId 注入每一条日志（有请求上下文时）。放在 combine 最前面，
+// 各 transport 都能拿到——现有所有 logger 调用点无需改动。
+const injectRequestId = winston.format((info) => {
+  const requestId = getRequestId();
+  if (requestId && !info.requestId) info.requestId = requestId;
+  return info;
+});
 
 const logger = winston.createLogger({
   level: logLevel,
   format: winston.format.combine(
+    injectRequestId(),
     winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
     winston.format.errors({ stack: true }),
     winston.format.splat(),

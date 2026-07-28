@@ -703,6 +703,35 @@ export class OrderService {
   }
 
   /**
+   * 平台内部：不绑租户、按订单 id 或订单号查订单（供 admin-bff 上帝视角"业务视图"下钻用）。
+   * 与 getOrderById 的区别：跨租户（平台方可查任意商户订单），且 UUID / 人类订单号都能查。
+   * 仅经 internalAuth（x-service-api-key）的内部接口调用，不对外暴露。
+   */
+  async getOrderByIdInternal(idOrNumber: string) {
+    // id 是 Postgres UUID 列，直接拿非 UUID 字符串按 id 查会导致数据库报错，
+    // 所以只有输入是合法 UUID 时才按 id 匹配，否则只按订单号匹配
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idOrNumber);
+    const where = isUuid
+      ? { OR: [{ id: idOrNumber }, { orderNumber: idOrNumber }] }
+      : { orderNumber: idOrNumber };
+    const order = await prisma.order.findFirst({
+      where,
+      include: {
+        orderItems: { include: { orderItemModifiers: true } },
+        orderNotes: { orderBy: { createdAt: 'desc' } },
+        analytics: true,
+      },
+    });
+
+    if (!order) {
+      throw new AppError(404, 'ORDER_NOT_FOUND', '订单不存在');
+    }
+
+    const storeTimezone = await organizationService.getStoreTimezone(order.tenantId);
+    return { ...order, storeTimezone };
+  }
+
+  /**
    * 预约订单状态机：合法的状态流转路径
    * SCHEDULED 表示预约等待中，到时间后自动/手动释放为 PENDING
    */

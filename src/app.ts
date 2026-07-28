@@ -10,6 +10,7 @@ import internalRoutes from './routes/internal';
 import twilioVoiceRoutes from './routes/twilio-voice.routes';
 import { errorHandler } from './middleware/errorHandler';
 import { validateMerchantId } from './middleware/validateMerchantId';
+import { requestId } from './middleware/requestId';
 import logger from './utils/logger';
 
 const app: Application = express();
@@ -136,6 +137,9 @@ app.use('/api', limiter);
 // Body parser
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// 关联 ID 地基：尽早挂载，保证后续请求日志和所有业务日志都带上同一个 x-request-id
+app.use(requestId);
 
 // 请求日志（过滤 health check 和高频轮询）
 app.use((req: Request, _res: Response, next) => {
