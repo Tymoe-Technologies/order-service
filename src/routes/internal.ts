@@ -1055,4 +1055,19 @@ router.post('/channel-credit/settle', internalAuth, async (req: Request, res: Re
   }
 });
 
+/**
+ * GET /internal/orders/:orderId —— 平台内部按订单 id 或订单号查订单（跨租户）。
+ * 供 admin-bff 上帝视角"业务视图"下钻用。放在文件末尾，确保不与更具体的
+ * /orders/reconciliation 等路由冲突。
+ */
+router.get('/orders/:orderId', internalAuth, async (req: Request, res: Response) => {
+  try {
+    const order = await orderService.getOrderByIdInternal(req.params.orderId);
+    res.json({ success: true, data: order });
+  } catch (error: any) {
+    const status = error?.statusCode || (error?.code === 'ORDER_NOT_FOUND' ? 404 : 500);
+    res.status(status).json({ success: false, error: error?.message || '查询失败' });
+  }
+});
+
 export default router;
