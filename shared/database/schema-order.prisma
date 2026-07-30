@@ -148,6 +148,14 @@ model OrderItem {
   attributes     Json?    @db.Json
   modifiers      Json?    @db.Json  // 旧格式（保留兼容，新订单不再写入）
   specialNotes   String?  @map("special_notes")
+
+  // 套餐相关（非套餐行为 null）：comboId 标记这一行是套餐，comboSelections 是下单时选中的
+  // 子项快照（[{itemId, itemName, quantity, additionalPrice}]），不用 orderItemModifiers 表存——
+  // 那张表的 modifierGroupId/modifierOptionId 是 NOT NULL 且语义上指向真实 modifier 记录，
+  // 套餐子项不是 modifier，硬塞进去会污染分析查询
+  comboId        String?  @map("combo_id") @db.Uuid
+  comboSelections Json?   @map("combo_selections") @db.Json
+
   order          Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
   orderItemModifiers OrderItemModifier[]
 
