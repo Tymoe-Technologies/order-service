@@ -42,12 +42,12 @@ export async function createSnapshot(req: Request, res: Response) {
       })
     }
 
-    // 验证 items
+    // 验证 items（套餐行传 comboId 不传 itemId，普通商品行反之，二选一即可）
     for (const item of items) {
-      if (!item.itemId || !item.quantity || item.quantity < 1) {
+      if ((!item.itemId && !item.comboId) || !item.quantity || item.quantity < 1) {
         return res.status(400).json({
           success: false,
-          error: 'Each item must have itemId and quantity >= 1',
+          error: 'Each item must have itemId or comboId, and quantity >= 1',
         })
       }
     }
