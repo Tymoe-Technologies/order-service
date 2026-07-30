@@ -12,10 +12,14 @@ interface CreateSnapshotDto {
     email?: string
   }
   items: Array<{
-    itemId: string
+    itemId?: string       // 普通商品行；套餐行不传这个，传 comboId
     quantity: number
     modifiers?: any
     selectedOptions?: Record<string, string[]>  // 结构化修饰符数据 { groupId: [optionId] }
+    // 套餐行专用字段：comboId 存在即视为套餐行
+    comboId?: string
+    // 套餐可选分组里顾客选中的 combo_item id 列表（固定必选子项不用传，后端自动带上）
+    selectedComboItemIds?: string[]
   }>
   tipAmount?: number
   notes?: string
@@ -178,6 +182,32 @@ async function getItemPrices(merchantId: string, itemIds: string[], channelCode?
   } catch (error) {
     console.error('[CheckoutSnapshot] Failed to fetch item prices:', error)
     throw new Error('Failed to fetch item prices from Item Service')
+  }
+}
+
+// 获取 Item Service 的套餐数据（通过 API Gateway 公开接口）
+// 注意：套餐公开接口不返回子项商品的税率，子项的价格/税率仍然要靠 getItemPrices 查
+async function getComboPrices(merchantId: string, comboIds: string[], channelCode?: string) {
+  try {
+    const apiGatewayUrl = process.env.API_GATEWAY_URL || 'http://localhost:8000'
+    const response = await axios.get(
+      `${apiGatewayUrl}/api/public/merchants/${merchantId}/combos`,
+      {
+        params: {
+          limit: 500,
+          page: 1,
+          ...(channelCode ? { salesChannelCode: channelCode } : {}),
+        },
+        headers: {
+          'X-Merchant-Id': merchantId,
+        },
+      }
+    )
+    const allCombos = response.data.data || []
+    return allCombos.filter((combo: any) => comboIds.includes(combo.id))
+  } catch (error) {
+    console.error('[CheckoutSnapshot] Failed to fetch combo prices:', error)
+    throw new Error('Failed to fetch combo prices from Item Service')
   }
 }
 
@@ -353,6 +383,33 @@ function calculateTax(subtotal: number, taxRates: Array<{ name: string; rate: nu
   return taxAmount
 }
 
+interface ComboAllocationPart {
+  weight: number  // 分摊权重（子项商品单卖标价 × 数量，选中的可选项再加上additionalPrice对应的"虚拟权重"）
+  taxRates: Array<{ name: string; rate: number; isCompound: boolean }>
+}
+
+/**
+ * 套餐分摊计税：套餐本身没有税率，按子项商品的标价权重把这一行的应税金额(taxableBase，
+ * 已经扣完折扣分摊)按比例分给各子项，再用子项各自的税率算税、加总。
+ * 跟 POS 前端 taxCalculation.ts 的套餐分摊算法是同一个思路，这里是后端权威计算。
+ */
+function calculateComboTax(taxableBase: number, parts: ComboAllocationPart[]): number {
+  const totalWeight = parts.reduce((s, p) => s + p.weight, 0)
+  if (totalWeight <= 0 || parts.length === 0) return 0
+
+  let tax = 0
+  let allocated = 0
+  parts.forEach((part, idx) => {
+    // 末项吃分摊余数，避免四舍五入误差累积/丢失
+    const partBase = idx === parts.length - 1
+      ? taxableBase - allocated
+      : Math.round(taxableBase * part.weight / totalWeight)
+    allocated += partBase
+    tax += calculateTax(partBase, part.taxRates)
+  })
+  return tax
+}
+
 /**
  * 创建结账快照（后端验证价格）
  */
@@ -384,17 +441,111 @@ export async function createCheckoutSnapshot(
       }
     }
 
-    // 1. 调用 Item Service 获取商品真实价格（传入渠道码以获取渠道定价）
-    const itemIds = data.items.map(item => item.itemId)
+    // 1. 拆开普通商品行和套餐行，套餐要先查套餐详情才知道子项商品是谁
+    const itemLines = data.items.filter(item => !item.comboId)
+    const comboLines = data.items.filter(item => !!item.comboId)
+
+    const comboIds = comboLines.map(item => item.comboId!)
+    const comboPrices = comboIds.length > 0
+      ? await getComboPrices(merchantId, comboIds, channelCode)
+      : []
+    console.log('[CheckoutSnapshot] Received combo prices:', comboPrices.length, 'combos')
+
+    // 套餐子项商品的价格/税率仍然要靠 getItemPrices 查（套餐公开接口不返回子项税率），
+    // 所以要把套餐里引用到的所有子项商品 id，跟普通商品行的 itemId 合并成一次批量查询
+    const comboChildItemIds = comboPrices.flatMap((combo: any) =>
+      (combo.combo_items || []).map((ci: any) => ci.item?.id).filter(Boolean)
+    )
+    const itemIds = Array.from(new Set([
+      ...itemLines.map(item => item.itemId!),
+      ...comboChildItemIds,
+    ]))
     console.log('[CheckoutSnapshot] Fetching item prices for:', itemIds, channelCode ? `(channelCode: ${channelCode})` : '')
-    const itemPrices = await getItemPrices(merchantId, itemIds, channelCode)
+    const itemPrices = itemIds.length > 0
+      ? await getItemPrices(merchantId, itemIds, channelCode)
+      : []
     console.log('[CheckoutSnapshot] Received item prices:', itemPrices.length, 'items')
 
-    // 2. 验证并重新计算每个商品的价格
+    // 2. 验证并重新计算每一行的价格（普通商品行 / 套餐行分别处理）
     const verifiedItems = data.items.map(item => {
-      const realItem = itemPrices.find((p: any) => p.id === item.itemId)
+      if (item.comboId) {
+        const realCombo = comboPrices.find((c: any) => c.id === item.comboId)
+        if (!realCombo) {
+          throw new Error(`Combo not found: ${item.comboId}`)
+        }
+
+        const comboBasePrice = parseInt(String(realCombo.base_price), 10) || 0
+        const allComboItems: any[] = realCombo.combo_items || []
+
+        // 固定必选子项（不属于任何可选分组）不需要顾客指定，后端直接带上；
+        // 可选分组里的子项必须是顾客传的 selectedComboItemIds，且必须真的属于这个套餐——
+        // 防止顾客伪造 id 把别的套餐/别的分组的高价子项塞进来白嫖
+        const requiredItems = allComboItems.filter((ci: any) => !ci.group_id && ci.is_required)
+        const selectedIds = new Set(item.selectedComboItemIds || [])
+        const selectedOptionalItems = allComboItems.filter((ci: any) => ci.group_id && selectedIds.has(ci.id))
+        const chosenComboItems = [...requiredItems, ...selectedOptionalItems]
+
+        if (chosenComboItems.length === 0) {
+          throw new Error(`No valid combo items selected for combo: ${item.comboId}`)
+        }
+
+        // 可选项加价（additionalPrice）加总，套餐总价 = 品牌/门店/渠道已经合并好的基础价 + 加价
+        const additionalPriceTotal = chosenComboItems.reduce(
+          (sum, ci) => sum + (parseInt(String(ci.additional_price), 10) || 0), 0
+        )
+        const realUnitPrice = comboBasePrice + additionalPriceTotal
+
+        // 按子项商品的单卖标价(× quantity)做权重分摊计税，子项各自税率不同也能算对
+        // （跟 POS 前端 taxCalculation.ts 的套餐分摊算法是同一个思路）
+        const comboAllocation: ComboAllocationPart[] = chosenComboItems.map((ci: any) => {
+          const childItem = itemPrices.find((p: any) => p.id === ci.item?.id)
+          const childBasePrice = childItem ? (parseInt(String(childItem.base_price), 10) || 0) : 0
+          return {
+            weight: childBasePrice * (ci.quantity || 1),
+            taxRates: childItem ? extractTaxRatesFromItems([childItem]) : [],
+          }
+        })
+
+        console.log('[CheckoutSnapshot] Combo detail:', {
+          comboId: item.comboId,
+          comboName: realCombo.name,
+          quantity: item.quantity,
+          comboBasePrice,
+          additionalPriceTotal,
+          realUnitPrice,
+          chosenComboItemCount: chosenComboItems.length,
+        })
+
+        return {
+          itemId: item.comboId,   // 占位用 comboId：FREE_ITEM/分类匹配这类逻辑按真实 itemId 匹配，套餐天然不会命中，符合预期
+          itemName: realCombo.name,
+          categoryId: realCombo.category?.id ?? null,
+          quantity: item.quantity,
+          basePrice: realUnitPrice,  // 套餐没有"不含加价"这个子概念，跟 unitPrice 一致即可
+          unitPrice: realUnitPrice,
+          modifiers: null,
+          taxRates: [] as Array<{ name: string; rate: number; isCompound: boolean }>,  // 套餐没有自己的税率，走 comboAllocation
+          verifiedModifiers: [] as ReturnType<typeof extractVerifiedModifiers>,
+          isCombo: true,
+          comboId: item.comboId,
+          comboAllocation,
+          // 落库到 OrderItem.comboSelections 的快照，供收据/厨房显示这份套餐具体选了什么
+          comboSelections: chosenComboItems.map((ci: any) => ({
+            itemId: ci.item?.id,
+            itemName: ci.item?.name,
+            quantity: ci.quantity,
+            additionalPrice: parseInt(String(ci.additional_price), 10) || 0,
+          })),
+        }
+      }
+
+      if (!item.itemId) {
+        throw new Error('Each order line must have either itemId or comboId')
+      }
+      const itemId = item.itemId
+      const realItem = itemPrices.find((p: any) => p.id === itemId)
       if (!realItem) {
-        throw new Error(`Item not found: ${item.itemId}`)
+        throw new Error(`Item not found: ${itemId}`)
       }
 
       // 计算真实单价（基础价 + 修饰符价格）
@@ -419,7 +570,7 @@ export async function createCheckoutSnapshot(
       })
 
       return {
-        itemId: item.itemId,
+        itemId,
         itemName: realItem.name,
         categoryId: realItem.category_id ?? null,  // 用于 FREE_ITEM PICK_FROM_CATEGORY 匹配
         quantity: item.quantity,
@@ -493,7 +644,10 @@ export async function createCheckoutSnapshot(
           : Math.round(totalDiscount * lineSubtotal / subtotal)
         allocatedDiscount += lineDiscount
         const taxableBase = Math.max(0, lineSubtotal - lineDiscount)
-        taxAmount += calculateTax(taxableBase, vi.taxRates)
+        // 套餐行没有自己的税率，按子项商品标价权重再分摊一层算税；普通商品行走原来的单税率逻辑
+        taxAmount += (vi as any).comboAllocation
+          ? calculateComboTax(taxableBase, (vi as any).comboAllocation)
+          : calculateTax(taxableBase, vi.taxRates)
       })
     }
     console.log('[CheckoutSnapshot] Per-line tax total:', taxAmount)
@@ -556,7 +710,8 @@ export async function createCheckoutSnapshot(
         customerName: data.customer.name,
         customerPhone: data.customer.phone,
         customerEmail: data.customer.email,
-        items: verifiedItems,
+        // 商品行/套餐行两种形状的联合类型让 Prisma 的 JSON 类型推导过不去，转成 any（存的就是普通JSON快照）
+        items: verifiedItems as any,
         pricing: {
           subtotal,
           taxAmount,
