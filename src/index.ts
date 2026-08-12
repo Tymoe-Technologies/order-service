@@ -1,5 +1,12 @@
 import dotenv from 'dotenv';
 import path from 'path';
+
+// 必须在其他模块 import 之前加载环境变量：
+// 后面 import 的模块（如 utils/jwks.ts 的单例）会在加载时就读取 process.env，
+// 如果 dotenv.config() 放在这些 import 之后，它们读到的永远是 undefined。
+const envFile = process.env.NODE_ENV === 'production' ? '.env.production' : '.env.development';
+dotenv.config({ path: path.resolve(process.cwd(), envFile) });
+
 import { createServer } from 'http';
 import app from './app';
 import logger from './utils/logger';
@@ -12,10 +19,6 @@ import { registerAllHandlers } from './events';
 import { startScheduledOrderRelease, stopScheduledOrderRelease } from './jobs/scheduled-order-release';
 import { startDeliveryConfirmationWatchdog, stopDeliveryConfirmationWatchdog } from './jobs/delivery-confirmation-watchdog';
 import { startAutoDeliveryConfirmation, stopAutoDeliveryConfirmation } from './jobs/auto-delivery-confirmation';
-
-// Load environment variables
-const envFile = process.env.NODE_ENV === 'production' ? '.env.production' : '.env.development';
-dotenv.config({ path: path.resolve(process.cwd(), envFile) });
 
 const PORT = process.env.PORT || 3002;
 

@@ -114,39 +114,6 @@ export class SalesChannelService {
     });
   }
 
-  /**
-   * 渠道数据的版本号，供 POS 判断「要不要重新拉渠道列表」。
-   *
-   * ## 为什么不用 Redis 计数器
-   * item-management 那套版本机制用的是 Redis INCR，但 order-service 一个 Redis
-   * 连接都没有，为一个计数器引入 ioredis 依赖不划算。而渠道表天然可以派生版本：
-   * 一次带索引的聚合查询，比它替代的那次「拉全部渠道 + JSON 序列化」便宜得多。
-   *
-   * ## 为什么是 `count:maxUpdatedAtMs` 两段
-   * - `MAX(updated_at)` 覆盖新增和修改
-   * - `COUNT(*)` 覆盖删除 —— **渠道是硬删（prisma.delete）**，被删那行的
-   *   updated_at 会随之消失，光看 MAX 可能一点变化都没有
-   *
-   * 两个量必须同时带上，所以版本号是字符串而不是整数（POS 的同步引擎对版本号
-   * 只做相等比较，不比大小）。硬塞进一个整数要么溢出 MAX_SAFE_INTEGER，
-   * 要么降到秒级精度而漏掉同一秒内的第二次修改。
-   *
-   * ## 为什么不按 isActive 过滤
-   * POS 只要 isActive=true 且非系统渠道的那些，这里却统计全部。是故意的：
-   * 少同步是数据错误，多同步只是一次多余请求。而在这儿复刻一遍调用方的过滤条件，
-   * 两边迟早会悄悄漂移 —— 那种 bug 表现为「改了渠道 POS 不更新」，极难查。
-   * 一个租户的渠道就那么几条，多余的重同步既罕见也便宜。
-   */
-  async getChannelVersion(tenantId: string): Promise<string> {
-    const agg = await prisma.orderSourceConfig.aggregate({
-      where: { tenantId },
-      _count: { _all: true },
-      _max: { updatedAt: true },
-    });
-    const maxMs = agg._max.updatedAt ? agg._max.updatedAt.getTime() : 0;
-    return `${agg._count._all}:${maxMs}`;
-  }
-
   async getSalesChannelById(channelId: string, tenantId: string) {
     const channel = await prisma.orderSourceConfig.findFirst({
       where: { id: channelId, tenantId },

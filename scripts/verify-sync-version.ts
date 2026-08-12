@@ -1,12 +1,8 @@
 /**
- * 验证渠道版本接口的两件事：
- *   ① 路由顺序 —— `/version` 必须排在 `/:channelId` 之前
+ * 验证 POS 同步版本接口（GET /api/order/v1/sync/version）：
+ *   ① 一个接口同时给出渠道和打印设置两个版本号
+ *      （引擎每个源只取一个 bundle，分成两个接口每轮就要多打一次）
  *   ② 版本号派生 —— count:maxUpdatedAtMs 的取值和对增/改/删的敏感性
- *
- * ## 为什么路由顺序要专门验
- * 写错的话 Express 会把 "version" 当成 channelId，返回 404。而 POS 那边只会记
- * 一条「取版本失败」，从现象完全看不出是路由顺序问题 —— 这类错还极容易在
- * 后人往这个文件里加路由时被重新引入。所以断言的是**结构**而不是某次请求的结果。
  *
  * ## 为什么增/改/删跑在会回滚的事务里
  * 开发库是远程共享的（155.248.x.x），不能留下测试数据。整段放进
@@ -31,27 +27,42 @@ async function versionIn(tx: any, tenantId: string): Promise<string> {
 }
 
 (async () => {
-  // ── ① 路由顺序（纯结构检查，不需要数据库也不需要 auth）
+  // ── ① 路由结构（纯结构检查，不需要数据库也不需要 auth）
   {
-    const router = require('../src/routes/sales-channel.routes').default;
-    const paths: string[] = router.stack
+    const syncRouter = require('../src/routes/sync.routes').default;
+    const paths: string[] = syncRouter.stack
       .filter((l: any) => l.route)
       .map((l: any) => `${Object.keys(l.route.methods)[0].toUpperCase()} ${l.route.path}`);
-    const iVersion = paths.indexOf('GET /version');
-    const iParam = paths.indexOf('GET /:channelId');
-    t('/version 路由已注册', iVersion >= 0, paths.join(' | '));
-    t('★ /version 排在 /:channelId 之前（否则会被当成 channelId）',
-      iVersion >= 0 && iParam >= 0 && iVersion < iParam, `version@${iVersion}, :channelId@${iParam}`);
+    t('/sync/version 路由已注册', paths.includes('GET /version'), paths.join(' | '));
+
+    /*
+      ★ 旧的 /sales-channels/version 必须已经撤掉。
+      两条路做同一件事时，后人改了一处忘了另一处 —— 而「版本号来源不一致」
+      会让同步在两种行为之间随机跳。所以这里钉住只剩一条。
+    */
+    const chRouter = require('../src/routes/sales-channel.routes').default;
+    const chPaths: string[] = chRouter.stack
+      .filter((l: any) => l.route)
+      .map((l: any) => `${Object.keys(l.route.methods)[0].toUpperCase()} ${l.route.path}`);
+    t('★ 旧的 /sales-channels/version 已撤掉（避免两个版本号来源）',
+      !chPaths.includes('GET /version'), chPaths.join(' | '));
   }
 
   // ── ② 版本号派生
   const prisma = require('../src/utils/prisma').default;
-  const svc = require('../src/services/sales-channel.service').default;
+  const svc = require('../src/services/sync-version.service');
 
   // 找一个真实存在的租户来验读取路径
   const any = await prisma.orderSourceConfig.findFirst({ select: { tenantId: true } });
   if (any) {
-    const v = await svc.getChannelVersion(any.tenantId);
+    const all = await svc.getPosSyncVersions(any.tenantId);
+    t('一个接口同时给出两个版本号',
+      typeof all.channelVersion === 'string' && typeof all.printSettingVersion === 'string',
+      JSON.stringify(all));
+    t('带 serverTime（POS 用它校正设备时钟偏差）',
+      !!all.serverTime && !Number.isNaN(Date.parse(all.serverTime)), String(all.serverTime));
+
+    const v = all.channelVersion;
     t('版本号形如 count:timestamp', /^\d+:\d+$/.test(v), v);
 
     // 和手工算出来的对照，确认 Prisma 聚合的返回结构没理解错
@@ -101,6 +112,32 @@ async function versionIn(tx: any, tenantId: string): Promise<string> {
         v3.split(':')[1] === v4.split(':')[1], `${v3} → ${v4}`);
 
       await tx.orderSourceConfig.delete({ where: { id: b.id } });
+
+      /*
+        打印设置：这类数据原来只在「打开打印设置面板」时才会检查更新，
+        商家在后台改了打印格式，POS 直到有人去开那个面板才知道。
+        版本号用 updated_at 而不是表里的 version 列 —— @updatedAt 由 Prisma 保证，
+        version 要靠写入方记得自增，少写一处就会「配置改了、版本号没动」。
+      */
+      const psVer = async () => {
+        const a = await tx.printSetting.aggregate({
+          where: { tenantId }, _count: { _all: true }, _max: { updatedAt: true },
+        });
+        return a._count._all === 0 ? '0:0'
+          : `${a._count._all}:${a._max.updatedAt ? a._max.updatedAt.getTime() : 0}`;
+      };
+      const p0 = await psVer();
+      t('空租户的打印设置版本是 0:0', p0 === '0:0', p0);
+      const ps = await tx.printSetting.create({
+        data: { tenantId, ticketType: 'CUSTOMER_RECEIPT', config: {}, createdBy: tenantId },
+      });
+      const p1 = await psVer();
+      t('★ 新增打印设置 → 版本变化', p1 !== p0, `${p0} → ${p1}`);
+      await tx.printSetting.update({ where: { id: ps.id }, data: { copies: 2 } });
+      const p2 = await psVer();
+      t('★ 改打印设置（份数）→ 版本变化（原来只在开面板时才发现）', p2 !== p1, `${p1} → ${p2}`);
+      await tx.printSetting.delete({ where: { id: ps.id } });
+
       throw new Error('__ROLLBACK__');   // 主动回滚，一行都不留
     });
   } catch (e: any) {
@@ -110,8 +147,9 @@ async function versionIn(tx: any, tenantId: string): Promise<string> {
   }
 
   // 确认真的没留下东西
-  const leftover = await prisma.orderSourceConfig.count({ where: { tenantId } });
-  t('回滚干净，没有残留测试数据', leftover === 0, `残留 ${leftover} 条`);
+  const leftCh = await prisma.orderSourceConfig.count({ where: { tenantId } });
+  const leftPs = await prisma.printSetting.count({ where: { tenantId } });
+  t('回滚干净，没有残留测试数据', leftCh === 0 && leftPs === 0, `残留 ${leftCh} / ${leftPs} 条`);
 
   let fail = 0;
   for (const [n, ok, note] of rows) {
