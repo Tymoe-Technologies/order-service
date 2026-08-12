@@ -21,6 +21,24 @@ export class SalesChannelController {
     }
   }
 
+  /**
+   * GET /sales-channels/version
+   * 返回渠道数据的版本号 + 服务端时间，供 POS 轻量轮询。
+   *
+   * serverTime 和 item-management 的版本接口保持一致：POS 用它校正设备时钟偏差。
+   * 不打 info 日志 —— 这个接口每台设备每 5 分钟一次，记下来只会淹掉别的日志。
+   */
+  async getChannelVersion(req: Request, res: Response, next: NextFunction) {
+    try {
+      const tenantId = req.user!.tenantId;
+      const channelVersion = await salesChannelService.getChannelVersion(tenantId);
+      successResponse(res, { channelVersion, serverTime: new Date().toISOString() });
+    } catch (error) {
+      logger.error('Error fetching channel version', error);
+      next(error);
+    }
+  }
+
   async getSalesChannelById(req: Request, res: Response, next: NextFunction) {
     try {
       const { channelId } = req.params;
