@@ -1781,7 +1781,20 @@ export class OrderService {
         if (data.paymentIntentId && !order.paymentIntentId) {
           updateData.paymentIntentId = data.paymentIntentId;
         }
-        if (data.paymentMethod && !order.paymentMethod) {
+        /*
+          支付方式以 finance 传来的为准，**覆盖**建单时那个值。
+
+          原来是 `&& !order.paymentMethod`（只在为空时写），而 POS 建 PENDING 订单
+          时必须先给一个值才能拿到 orderId —— 那时候还没收钱，只能猜：
+          礼品卡那条路径直接写死 CASH，主路径是「非现金一律 CARD」。
+          于是这个字段永远停在占位值上：礼品卡单显示成现金、自定义方式显示成刷卡、
+          组合支付显示成其中某一种。
+
+          标 PAID 这一刻 finance 才知道整单实际是怎么付的（POS 会把订单级方式
+          一路传过来），此时它比建单时的猜测更可信，应当覆盖。
+          注意只在 PAID 分支里覆盖 —— 别的状态变更不带这个信息。
+        */
+        if (data.paymentMethod) {
           updateData.paymentMethod = data.paymentMethod;
         }
         // 记录 Finance Service 的支付 ID（存入 transactionId 字段）
