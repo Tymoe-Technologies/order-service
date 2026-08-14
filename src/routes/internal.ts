@@ -657,6 +657,34 @@ router.get('/orders/reconciliation', internalAuth, async (req: Request, res: Res
   }
 
   try {
+    /*
+      找出「建单即 PAID、且**不产生 finance 支付记录**」的渠道。
+
+      这类订单在 createOrder 里被直接标成 PAID（见 isAccountPayment / isPlatformCollect），
+      钱不经过我们的收单通道，所以 finance 里没有对应的 payment ——
+      拿去和支付记录对账必然全部报「钱收了没记录」。
+
+      原来只写了 `orderSource notIn ['UBER_EATS']`，漏掉两类：
+        ① 商家自建的平台渠道（platformType 是 DOORDASH / SKIP_THE_DISHES /
+           FANTUAN 等 7 种之一）。这些单的 orderSource 仍是 POS，
+           paymentMethod 也可能是 CASH（POS 建单时只能猜），光看这两个字段认不出来 ——
+           **只有渠道配置知道它是平台代收**
+        ② 渠道记账模式（checkoutMode=CREDIT_ACCOUNT，即挂账），同样建单即 PAID
+
+      所以必须先查渠道配置，不能只靠订单自身的字段。
+    */
+    const noPaymentChannels = await prisma.orderSourceConfig.findMany({
+      where: {
+        tenantId,
+        OR: [
+          { platformType: { not: null } },          // 平台代收
+          { checkoutMode: 'CREDIT_ACCOUNT' },       // 渠道记账/挂账
+        ],
+      },
+      select: { id: true },
+    });
+    const excludedChannelIds = noPaymentChannels.map((c) => c.id);
+
     const orders = await prisma.order.findMany({
       where: {
         tenantId,
@@ -664,8 +692,14 @@ router.get('/orders/reconciliation', internalAuth, async (req: Request, res: Res
           gte: new Date(startDate),
           lte: new Date(endDate),
         },
-        // 只对账有实际支付行为的订单（排除 Uber Eats 等第三方平台代收）
+        // Uber Eats 直连来单（没有 channelConfigId，靠 orderSource 认）
         orderSource: { notIn: ['UBER_EATS'] },
+        // POS 显式指定的平台代收 / 挂账
+        paymentMethod: { notIn: ['PLATFORM', 'ACCOUNT'] },
+        // 渠道配置决定的平台代收 / 挂账
+        ...(excludedChannelIds.length > 0
+          ? { NOT: { channelConfigId: { in: excludedChannelIds } } }
+          : {}),
         status: { not: 'CANCELLED' },
       },
       select: {
