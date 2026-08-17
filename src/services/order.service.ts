@@ -163,6 +163,61 @@ interface CreateOrderData {
 
   // 销售渠道（可选，选择了自定义渠道时传入）
   salesChannelId?: string; // SalesChannelConfig.id
+
+  /**
+   * 客户端记录的**下单时间**（ISO 8601），只有离线补传才需要传。
+   *
+   * 不传 = 实时下单，createdAt 用服务端 now()。
+   * 传了 = 这单是离线时收的，用它作为业务时间（报表/对账口径），
+   * 服务端另把收到的时刻记进 receivedAt。
+   * 会做时钟校验，见 resolvePlacedAt。
+   */
+  clientCreatedAt?: string;
+}
+
+/** 客户端时间最多允许早于现在多少天 —— 超过就当作时钟错乱，不采信 */
+const CLIENT_TIME_MAX_AGE_DAYS = 7;
+/** 允许的未来偏差：设备时钟快几分钟是常态，超过就不采信 */
+const CLIENT_TIME_MAX_SKEW_MS = 5 * 60 * 1000;
+
+/**
+ * 决定这一单的业务时间（createdAt）和落库时间（receivedAt）。
+ *
+ * 设备时钟不可信：能被人改，也会自己漂。一台时钟错乱的收银机如果能随意指定
+ * 下单时间，就能把销售额记到任意一天，报表和对账都会被污染。
+ * 所以客户端的值要过两道闸 —— 不能是未来（允许 5 分钟时钟快），
+ * 不能早于 7 天（离线再久也不该超过这个量级，超了多半是时钟坏了）。
+ *
+ * 不采信时**不丢弃**，原样记进 claimedCreatedAt：出了争议要查得到它当时报了什么。
+ */
+function resolvePlacedAt(clientCreatedAt: string | undefined, now: Date): {
+  createdAt?: Date;
+  receivedAt: Date | null;
+  claimedCreatedAt: Date | null;
+} {
+  if (!clientCreatedAt) {
+    // 实时下单：createdAt 交给数据库默认值，receivedAt 留空（两者本来就相等，没必要冗余）
+    return { createdAt: undefined, receivedAt: null, claimedCreatedAt: null };
+  }
+
+  const claimed = new Date(clientCreatedAt);
+  const valid =
+    !Number.isNaN(claimed.getTime()) &&
+    claimed.getTime() <= now.getTime() + CLIENT_TIME_MAX_SKEW_MS &&
+    claimed.getTime() >= now.getTime() - CLIENT_TIME_MAX_AGE_DAYS * 24 * 3600 * 1000;
+
+  if (!valid) {
+    logger.warn('[Order] 客户端下单时间未通过校验，退回服务端时间', {
+      clientCreatedAt, now: now.toISOString(),
+    });
+    return {
+      createdAt: undefined,
+      receivedAt: now,
+      claimedCreatedAt: Number.isNaN(claimed.getTime()) ? null : claimed,
+    };
+  }
+
+  return { createdAt: claimed, receivedAt: now, claimedCreatedAt: null };
 }
 
 interface OrderQuery {
@@ -417,6 +472,9 @@ export class OrderService {
       const paymentStatus = (isAccountPayment || isPlatformCollect) ? 'PAID' : 'UNPAID';
       const paidAt: Date | null = (isAccountPayment || isPlatformCollect) ? new Date() : null;
 
+      // 业务时间 / 落库时间。离线补传单会带 clientCreatedAt，实时下单不带
+      const placedAt = resolvePlacedAt(data.clientCreatedAt, new Date());
+
 
       // POS 订单在建单时就生成取餐号，无需等待 Finance 回调
       // 取餐号不是稀缺资源，少量废单不影响运营
@@ -473,6 +531,15 @@ export class OrderService {
               paymentMethod: data.paymentMethod || null,
               transactionId: data.transactionId || null,
               paidAt: paidAt,
+
+              /*
+                时间三件套。实时下单时 createdAt 走数据库默认值（undefined 即不写），
+                另两列为 null；离线补传时 createdAt = 客户端的下单时间，
+                receivedAt = 服务端收到的时刻。见 resolvePlacedAt。
+              */
+              ...(placedAt.createdAt ? { createdAt: placedAt.createdAt } : {}),
+              receivedAt: placedAt.receivedAt,
+              claimedCreatedAt: placedAt.claimedCreatedAt,
 
               cashierId: userId,  // 收银员就是创建订单的用户
               cashierName: data.cashierName || null,                       // 收银员姓名快照

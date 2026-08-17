@@ -91,7 +91,29 @@ model Order {
   memberId       String?       @map("member_id") @db.Uuid
 
   createdBy      String        @map("created_by") @db.Uuid
+  // ⚠️ createdAt = 下单时间（业务时间），不一定等于这行写进库的时间。
+  //
+  // 离线单补传时由客户端带上原始下单时间覆盖默认值：一笔 22:50 收的离线单
+  // 第二天 09:00 才补传，如果按落库时间算，昨天的 Z 报表少一笔、今天多一笔，
+  // 现金盘点两天都对不上 —— 销售额必须落在它实际发生的营业日。
+  // 报表、时间筛选、对账读的都是这一列，所以让它直接是对的，
+  // 而不是新加一列再逐个改查询（漏改一处就出现两个口径，且极难发现）。
+  //
+  // 落库时间由 receivedAt 承载（见下），只有补传单才非空。
   createdAt      DateTime      @default(now()) @map("created_at")
+
+  // 服务端实际收到这一单的时间。
+  // null = 实时下单（createdAt 就是落库时间，没有区别）。
+  // 非 null = 这是一笔离线补传单：客户端声称的下单时间是 createdAt、
+  // 服务端在 receivedAt 才收到 —— 差值就是它离线了多久。
+  // received_at IS NOT NULL 因此也是「离线补传单」的天然筛选条件。
+  receivedAt     DateTime?     @map("received_at")
+
+  // 客户端声称的下单时间「未通过校验」时，原样留在这里（createdAt 退回 now()）。
+  // 设备时钟能被改、也会漂：未来时间或早于 7 天的值一律不采信，
+  // 否则一台时钟错乱的收银机能把销售额记到任意一天去。
+  // 但不采信不等于丢弃 —— 出了争议要能查它当时报的是什么。
+  claimedCreatedAt DateTime?   @map("claimed_created_at")
   updatedAt      DateTime      @updatedAt @map("updated_at")
   orderSource    OrderSource   @default(POS) @map("order_source")
   
