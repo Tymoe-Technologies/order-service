@@ -79,6 +79,21 @@ export const createOrderSchema = Joi.object({
 
   // 销售渠道（关联 orderSourceConfig.id）
   salesChannelId: Joi.string().uuid().optional().allow(null),
+
+  /*
+    客户端记录的下单时间（ISO 8601），只有 POS 离线补传会传。
+    不传 = 实时下单，服务端用自己的 now()。
+
+    ⚠️ 这个 schema 是白名单（Joi 默认拒绝未知字段），加字段必须**三处一起改**：
+    CreateOrderData 类型、这里的校验、以及落库那段。
+    只改前两处的话请求会被这里 400 掉（"clientCreatedAt" is not allowed），
+    而且报错发生在补传里 —— 界面上只是"补传失败"，不点开控制台看不出是字段被拒。
+
+    这里只校验格式，**合理性由 order.service 的 resolvePlacedAt 判**
+    （不能是未来、不能早于 7 天）：那属于业务规则，而且不合格时要退回 now()
+    并把原值留痕，不是简单拒绝请求 —— 拒绝的话这单永远补不上去。
+  */
+  clientCreatedAt: Joi.string().isoDate().optional().allow(null),
 });
 
 export const updateOrderStatusSchema = Joi.object({
