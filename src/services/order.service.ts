@@ -165,6 +165,19 @@ interface CreateOrderData {
   salesChannelId?: string; // SalesChannelConfig.id
 
   /**
+   * 客户端生成的订单主键（UUIDv7）。传了就用它，不传服务端自己生成。
+   *
+   * 为什么允许客户端定主键：POS 是**先收钱后建单**的，收钱那一刻订单在后端
+   * 还不存在。有了客户端 id，这一单在收款之前就有了稳定身份 ——
+   *   · finance 可以立刻挂账，不必干等 order-service 恢复
+   *   · 接联机卡支付时能把它写进 PaymentIntent 的 metadata，
+   *     POS 中途崩溃后靠它反查那笔到底成没成
+   *   · 补传重发天然幂等（见下面的重放检查），不会像以前那样重复建单
+   * UUID 本身不需要任何协调，所以这件事没有代价。
+   */
+  id?: string;
+
+  /**
    * 客户端记录的**下单时间**（ISO 8601），只有离线补传才需要传。
    *
    * 不传 = 实时下单，createdAt 用服务端 now()。
@@ -313,6 +326,43 @@ export class OrderService {
       // 验证数据
       if (!data.items || data.items.length === 0) {
         throw new AppError(400, 'INVALID_ITEMS', '订单必须包含至少一个商品');
+      }
+
+      /*
+        ★ 重放检查。客户端带了 id 就先看这单是不是已经建过了。
+
+        POS 的补传是「发出去 → 没收到回应 → 下一轮再发」，而"没收到回应"
+        和"对方没收到"是两回事：请求可能已经落库了，只是响应在路上丢了。
+        没有这道检查的话，那一单会被建**两次** —— 而且两次都是有效订单，
+        事后极难分辨哪个是重复的（这个坑之前踩过，当时靠修快照覆盖的 bug
+        缓解了，但只要再有一次重发就会复现）。
+
+        直接返回已有的那单，调用方拿到的响应和第一次成功时**完全一样**，
+        所以它不需要知道自己是不是在重放。这就是幂等的意义。
+      */
+      if (data.id) {
+        const replay = await prisma.order.findUnique({ where: { id: data.id } });
+        if (replay) {
+          if (replay.tenantId !== tenantId) {
+            // 同一个 id 出现在别的租户名下：不是重放，是撞了或者越权，必须拒
+            throw new AppError(409, 'ORDER_ID_CONFLICT', '订单 ID 已被占用');
+          }
+          logger.info('[Order] 重放建单请求，返回已有订单', {
+            orderId: replay.id, orderNumber: replay.orderNumber,
+          });
+          return {
+            id: replay.id,
+            orderNumber: replay.orderNumber,
+            pickupNumber: replay.pickupNumber ?? null,
+            pickupDisplay: replay.pickupNumber != null ? String(replay.pickupNumber) : null,
+            status: replay.status,
+            totalAmount: replay.totalAmount,
+            paymentStatus: replay.paymentStatus,
+            paymentMethod: replay.paymentMethod,
+            memberId: replay.memberId,
+            createdAt: replay.createdAt,
+          };
+        }
       }
 
       // ── 会员券防双花关卡 ───────────────────────────────────────
@@ -494,7 +544,8 @@ export class OrderService {
             data: {
               // 订单主键用 UUID v7（时间有序），改善高频写入时的索引局部性；
               // 仍是标准 128-bit UUID，与 @db.Uuid 列和现有 v4 老数据完全兼容
-              id: uuidv7(),
+              // 客户端给了就用它（上面已确认这个 id 还没被占用）
+              id: data.id || uuidv7(),
               tenantId,
               orderNumber,
               // POS 订单建单时就分配取餐号；其他来源在支付成功时生成

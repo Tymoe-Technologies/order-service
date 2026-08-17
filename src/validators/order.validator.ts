@@ -94,6 +94,13 @@ export const createOrderSchema = Joi.object({
     并把原值留痕，不是简单拒绝请求 —— 拒绝的话这单永远补不上去。
   */
   clientCreatedAt: Joi.string().isoDate().optional().allow(null),
+
+  /*
+    客户端生成的订单主键（UUIDv7）。不传则服务端生成。
+    只校验是不是合法 UUID —— 是不是重放、有没有被别的租户占用，
+    由 order.service 的重放检查判（那里才拿得到 tenantId）。
+  */
+  id: Joi.string().uuid().optional(),
 });
 
 export const updateOrderStatusSchema = Joi.object({
