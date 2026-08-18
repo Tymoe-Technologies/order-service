@@ -1,6 +1,7 @@
 import prisma from '../utils/prisma';
 import { pickupNumberConfigService } from './print-setting.service';
 import { AppError } from '../middleware/errorHandler';
+import { runWithIdempotency, fingerprintOf } from './idempotency.service';
 import logger from '../utils/logger';
 import { assertCreditAvailable } from './credit.service';
 import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
@@ -258,7 +259,34 @@ interface OrderQuery {
   search?: string;  // 支持 pickupNumber（数字）或 orderNumber（字符串）模糊匹配
 }
 
-export class OrderService {
+export /**
+ * 建单请求的指纹。
+ *
+ * 只取**影响结果**的字段，且和数组顺序无关。
+ *
+ * ⚠️ 绝不能对整个请求体做 hash。补传每一轮带的 `clientCreatedAt` 是同一个值，
+ * 但将来只要有任何一个「每次都不同」的字段混进来（重试次数、时间戳、
+ * 设备当前状态…），每一次正常重发都会变成「指纹不符」→ 被当成撞键拒绝，
+ * 而那一单的钱**已经收了**。所以这里是白名单，不是黑名单。
+ *
+ * 取的这几项和它替代的那套判据同源（明细、金额、订单类型），只是更精确：
+ * 原来只比条数和总额，两个不同的单凑巧同额同数就会被判成同一单。
+ */
+const createOrderFingerprint = (data: CreateOrderData): string =>
+  fingerprintOf({
+    orderType: data.orderType ?? null,
+    clientOrigin: data.clientOrigin ?? null,
+    // 排序后再进指纹：同一批商品换个顺序传，仍然是同一单
+    items: (data.items ?? [])
+      .map((it: any) => [
+        String(it.itemId ?? ''),
+        Number(it.quantity ?? 1),
+        Math.round(Number(it.unitPrice ?? 0)),   // 和落库时同样取整，避免浮点尾数
+      ].join(':'))
+      .sort(),
+  });
+
+class OrderService {
   // 可信任的客户端入口（不需要验证价格）
   private trustedOrigins = (process.env.TRUSTED_ORDER_SOURCES || 'POS,KIOSK').split(',');
 
@@ -386,7 +414,29 @@ export class OrderService {
     );
   }
 
+  /**
+   * 建单。带 `id` 时走幂等保护（见 idempotency.service）。
+   *
+   * 幂等键就是客户端生成的 `orders.id` —— POS 在收钱之前就有它，
+   * 补传每一轮都用同一个，所以它天然是这次建单的唯一身份。
+   *
+   * 不带 id 的（WEB / UberEats）行为不变：那些渠道不会重发同一单。
+   */
   async createOrder(data: CreateOrderData, userId: string, tenantId: string, token?: string, messageId?: string) {
+    if (!data.id) {
+      return this.createOrderInner(data, userId, tenantId, token, messageId);
+    }
+    const { result } = await runWithIdempotency(
+      tenantId,
+      'orders.create',
+      data.id,
+      createOrderFingerprint(data),
+      () => this.createOrderInner(data, userId, tenantId, token, messageId),
+    );
+    return result;
+  }
+
+  private async createOrderInner(data: CreateOrderData, userId: string, tenantId: string, token?: string, messageId?: string) {
     try {
       const clientOrigin = data.clientOrigin || 'POS';
 
@@ -396,7 +446,15 @@ export class OrderService {
       }
 
       /*
-        ★ 重放检查。客户端带了 id 就先看这单是不是已经建过了。
+        ★ 兜底的重放检查。**正常路径已经不会走到这里** —— 幂等键表在更外层
+        就把重发挡掉并回放了原始响应（见 createOrder / idempotency.service）。
+
+        留着它是为了两种键记录不在的情况：
+          · 幂等记录过了 TTL（24 小时）才收到重发
+          · 老数据：这套上线之前建的单
+        这两种下面这段仍然是对的 —— 因为今天订单建好就不会变。
+        **等以后支持加菜时，这段必须删掉**：那时它会把正常重发误判成撞车。
+        届时 TTL 内的重发由幂等表处理，超出 TTL 的应当直接按主键冲突拒绝。
 
         POS 的补传是「发出去 → 没收到回应 → 下一轮再发」，而"没收到回应"
         和"对方没收到"是两回事：请求可能已经落库了，只是响应在路上丢了。
