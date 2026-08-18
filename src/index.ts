@@ -19,6 +19,7 @@ import { registerAllHandlers } from './events';
 import { startScheduledOrderRelease, stopScheduledOrderRelease } from './jobs/scheduled-order-release';
 import { startDeliveryConfirmationWatchdog, stopDeliveryConfirmationWatchdog } from './jobs/delivery-confirmation-watchdog';
 import { startAutoDeliveryConfirmation, stopAutoDeliveryConfirmation } from './jobs/auto-delivery-confirmation';
+import { purgeExpiredIdempotencyKeys } from './services/idempotency.service';
 
 const PORT = process.env.PORT || 3002;
 
@@ -130,6 +131,15 @@ const startServer = async () => {
     // 支付成功 15 分钟内员工未确认时，系统自动用默认备餐时间建配送单；
     // 建单失败则自动取消订单 + 退款 + Twilio 告警（见 auto-delivery-confirmation.ts）
     startAutoDeliveryConfirmation();
+
+    // ========== 幂等键过期清理 ==========
+    /*
+      纯控表大小，**不是正确性依赖** —— 记录清掉之后同一个 key 再来会被当成新
+      请求，走到 orders.id 主键那道兜底。所以跑不跑、什么时候跑都不影响对错。
+      每小时一次即可；启动时先跑一次，免得进程频繁重启时永远轮不到。
+    */
+    void purgeExpiredIdempotencyKeys().catch(() => {});
+    setInterval(() => { void purgeExpiredIdempotencyKeys().catch(() => {}); }, 3600_000);
   } catch (error) {
     logger.error('Failed to start server:', error);
     process.exit(1);

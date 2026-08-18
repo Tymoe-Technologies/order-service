@@ -686,6 +686,26 @@ model PickupNumberConfig {
   @@map("pickup_number_configs")
 }
 
+/// 幂等键存储。见 migrations/20260818120000_idempotency_store。
+///
+/// 判重和「订单当前长什么样」解耦：记下这个 key 处理过、当时回了什么，
+/// 重发直接回放原始响应。以后 addItems / voidItem 这些可重试的写操作复用同一张表。
+model IdempotencyKey {
+  tenantId     String    @map("tenant_id") @db.Uuid
+  endpoint     String    @db.VarChar(100)          // "orders.create" / "orders.addItems"
+  key          String    @db.VarChar(255)          // 客户端提供，建单用 orders.id
+  fingerprint  String    @db.VarChar(64)           // 规范化请求体的 sha256
+  responseBody String?   @map("response_body")   // 原始响应字节，见迁移里的说明
+  status       String    @default("IN_PROGRESS") @db.VarChar(20)
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at")
+  expiresAt    DateTime  @map("expires_at")
+
+  @@id([tenantId, endpoint, key])
+  @@index([expiresAt])
+  @@map("idempotency_keys")
+}
+
 // 取餐号当日计数器（原子自增，全渠道共享，消除并发竞态）
 model PickupCounter {
   tenantId    String   @map("tenant_id") @db.Uuid
