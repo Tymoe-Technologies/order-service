@@ -178,6 +178,20 @@ interface CreateOrderData {
   id?: string;
 
   /**
+   * 客户端生成的订单号。不传则服务端按老规则发（前缀 + 4 位随机）。
+   *
+   * POS 本地发号的格式是 `门店码+营业日+渠道码+设备码+本机当日序号`，
+   * 唯一性靠**设备码做号段隔离**（设备码由 auth-service 激活时分配，门店内唯一），
+   * 不靠随机 —— 服务端那套 4 位随机在 1000 单/天 的门店撞号概率 31%，
+   * 服务端撞了能重摇，本地撞了不能（小票已打）。
+   *
+   * 服务端这边只做两件事：格式校验 + 唯一性兜底（DB 的 @unique）。
+   * **不校验设备码归属** —— order-service 看不到设备清单（那在 auth-service），
+   * 硬要校验就得跨服务查询，为一个已经由号段结构保证的东西加一次网络往返不划算。
+   */
+  orderNumber?: string;
+
+  /**
    * 客户端记录的**下单时间**（ISO 8601），只有离线补传才需要传。
    *
    * 不传 = 实时下单，createdAt 用服务端 now()。
@@ -510,7 +524,17 @@ export class OrderService {
 
       // 只生成订单号，不生成取餐号
       // 取餐号在支付成功（PAID）时原子生成，避免取消订单造成号码空洞
-      let { orderNumber } = await this.generateOrderNumber(tenantId, clientOrigin);
+      /*
+        订单号：客户端给了就用它（POS 本地发号，见 CreateOrderData.orderNumber），
+        没给才服务端生成。
+
+        下面那段 catch(P2002) 重摇后缀的重试**只对服务端生成的号有意义** ——
+        客户端的号已经印在小票上了，重摇等于让顾客手里那张作废。
+        所以客户端号撞了要直接报错，让上层知道，而不是偷偷换一个。
+      */
+      const clientProvidedNumber = !!data.orderNumber;
+      let orderNumber = data.orderNumber
+        || (await this.generateOrderNumber(tenantId, clientOrigin)).orderNumber;
 
       // 记账模式直接标为 PAID（无需即时收款，finance-service 后续追踪账期）
       // 其他模式统一 UNPAID，支付完成由 Finance Service 回调更新
@@ -614,8 +638,18 @@ export class OrderService {
           });
           break;
         } catch (e) {
+          if (this.isOrderNumberConflict(e) && clientProvidedNumber) {
+            /*
+              客户端给的号撞了。**不能重摇** —— 这个号已经印在顾客的小票上了，
+              换一个等于系统里和顾客手里对不上。
+              号段隔离下这本不该发生，真发生了说明设备码分配或本地序号出了问题，
+              属于要人介入的状况，必须报出来。
+            */
+            logger.error('客户端提供的订单号已存在', { orderNumber, tenantId });
+            throw new AppError(409, 'ORDER_NUMBER_CONFLICT', `订单号已存在: ${orderNumber}`);
+          }
           if (attempt < 4 && this.isOrderNumberConflict(e)) {
-            // 订单号碰撞（极小概率），重新生成后缀
+            // 服务端自己生成的号撞了（4 位随机，概率不低）：重摇后缀
             logger.warn('订单号碰撞，重新生成后缀', { attempt, orderNumber });
             orderNumber = this.buildCandidateOrderNumber(tenantId, clientOrigin);
             continue;
