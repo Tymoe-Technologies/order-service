@@ -11,7 +11,9 @@ datasource db {
 model Order {
   id             String        @id @default(uuid()) @db.Uuid
   tenantId       String        @map("tenant_id") @db.Uuid
-  orderNumber    String        @unique @map("order_number") @db.VarChar(50)
+  // 唯一性范围是**门店内**，不是全局 —— 全局唯一由 id（UUIDv7）承担。
+  // 正因如此订单号里不用再塞门店码（那 4 位对店员是纯噪音，只为撑全局唯一而存在）。
+  orderNumber    String        @map("order_number") @db.VarChar(50)
   pickupNumber   Int?          @map("pickup_number")                        // 当日取餐号（1-9999，每天重置，门店内唯一）
   messageId      String?       @unique @map("message_id") @db.VarChar(255)
   // 用户关联（可选，POS/匿名订单为空）
@@ -114,6 +116,10 @@ model Order {
   // 否则一台时钟错乱的收银机能把销售额记到任意一天去。
   // 但不采信不等于丢弃 —— 出了争议要能查它当时报的是什么。
   claimedCreatedAt DateTime?   @map("claimed_created_at")
+
+  // 客户端声称的订单号，在它撞号、服务端改用自己发的号时留痕。
+  // 顾客小票上印的是这个，拿来查单要能对上。
+  claimedOrderNumber String?    @map("claimed_order_number") @db.VarChar(50)
   updatedAt      DateTime      @updatedAt @map("updated_at")
   orderSource    OrderSource   @default(POS) @map("order_source")
   
@@ -135,6 +141,7 @@ model Order {
   statusHistory  OrderStatusHistory[]
   analytics      OrderAnalytics?
 
+  @@unique([tenantId, orderNumber])
   @@index([tenantId, createdAt])
   @@index([orderNumber])
   @@index([tenantId, pickupNumber])  // 门店内按取餐号快速搜索

@@ -103,13 +103,15 @@ export const createOrderSchema = Joi.object({
   id: Joi.string().uuid().optional(),
 
   /*
-    客户端生成的订单号。格式 `门店码(4)+营业日(6)+渠道码(1)+设备码(2)+序号(4)` = 17 位，
-    字符集和服务端后缀一致（去掉 I/O 的 base34）+ 序号那段是十进制。
-    这里只做形状校验，防的是脏数据（比如把 UUID 塞进来）；
-    唯一性由 DB 的 @unique 兜底。
-    老格式（前缀+4位=15 位）是服务端生成的，不走这条。
+    客户端生成的订单号。格式 `营业日(6)-渠道码(1)设备码(2)-当日秒数(4)` = 15 位。
+    这是雪花算法换了刻度和编码：时间戳=营业日+当日秒数、机器ID=设备码、
+    序号=同秒借下一秒。唯一性靠结构（设备码做号段隔离），不靠随机。
+
+    这里只做形状校验，防脏数据（比如把 UUID 塞进来）；
+    唯一性由 DB 的 @@unique([tenantId, orderNumber]) 兜底，
+    撞了则服务端改用自己发的号并把这个留进 claimed_order_number（不拒绝请求）。
   */
-  orderNumber: Joi.string().pattern(/^[0-9A-HJ-NP-Z]{4}\d{6}[A-Z][0-9A-HJ-NP-Z]{2}\d{4}$/).optional(),
+  orderNumber: Joi.string().pattern(/^\d{6}-[A-Z][0-9A-HJ-NP-Z]{2}-[0-9A-HJ-NP-Z]{4}$/).optional(),
 });
 
 export const updateOrderStatusSchema = Joi.object({

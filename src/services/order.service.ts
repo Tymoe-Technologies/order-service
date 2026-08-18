@@ -279,31 +279,67 @@ export class OrderService {
     UBER_EATS: 'U',
   };
 
-  // 随机字符集：去掉 I/O 避免与 1/0 混淆，共 34 种字符（34^4 ≈ 130 万种组合）
+  /**
+   * base34 字符集：去掉 I/O 避免与 1/0 混淆。
+   * 和 POS 的 localOrderNumber.ts 必须**保持一致** —— 两边发的号进同一列。
+   *
+   * 注：老的「4 位随机后缀」发号方式已停用（那套靠概率，实测 1000 单/天
+   * 撞号 31%、2000 单/天 78%）。现在这个字符集只用于把当日秒数编成 base34。
+   */
   private static readonly SUFFIX_CHARS = '0123456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 
-  private generateRandomSuffix(length = 4): string {
+  /**
+   * 服务端的设备码。POS/Kiosk 的码由 auth-service 分配（门店内唯一），
+   * `00` 保留给**服务端自己建的单**（Web 预约、外卖平台）—— 它们不属于任何一台设备，
+   * 但也要占一个不与设备冲突的号段。
+   */
+  private static readonly SERVER_DEVICE_CODE = '00';
+
+  /** 数字 → 定长 base34。34⁴ = 1,336,336，装 86400 秒绰绰有余 */
+  private toBase34(n: number, width = 4): string {
     const chars = OrderService.SUFFIX_CHARS;
-    let result = '';
-    for (let i = 0; i < length; i++) {
-      result += chars[Math.floor(Math.random() * chars.length)];
+    let out = '';
+    let v = n;
+    for (let i = 0; i < width; i++) {
+      out = chars[v % chars.length] + out;
+      v = Math.floor(v / chars.length);
     }
-    return result;
+    return out;
   }
 
-  // 生成订单号前缀（门店码 + MMDD + 入口码），不含随机后缀
-  private buildOrderPrefix(tenantId: string, clientOrigin: string): string {
-    const storeCode = tenantId.replace(/-/g, '').substring(0, 4).toUpperCase();
+
+
+  /**
+   * 生成一个订单号。**和 POS 本地发号同一套格式**：
+   *
+   *     260817-W00-2F7Q
+   *     ──────  ─ ──  ────
+   *     营业日  渠道 设备 当日秒数(base34)
+   *
+   * 服务端是 Web/外卖单的唯一写入方，设备码固定 `00`。
+   * 同一秒内多单靠 `+1 借下一秒`（和 POS 同构），撞了还有 DB 唯一约束兜底。
+   *
+   * 老格式（`门店码+日期+渠道+4位随机`，15 位）已停用 —— 那套靠概率，
+   * 实测 1000 单/天 撞号概率 31%，所以才有下面那段重摇逻辑。新格式靠结构。
+   */
+  private lastSlot: { date: string; slot: number } | null = null;
+
+  buildCandidateOrderNumber(_tenantId: string, clientOrigin: string): string {
     const now = new Date();
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const day = String(now.getDate()).padStart(2, '0');
-    const originCode = OrderService.ORIGIN_PREFIX_CODE[clientOrigin] ?? 'X';
-    return `${storeCode}${now.getFullYear() % 100}${month}${day}${originCode}`;
-  }
+    const yymmdd = `${now.getFullYear() % 100}`.padStart(2, '0')
+      + `${now.getMonth() + 1}`.padStart(2, '0')
+      + `${now.getDate()}`.padStart(2, '0');
+    const secondOfDay = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
 
-  // 生成一个候选订单号（前缀 + 随机4位），不保证唯一性，由 DB @unique 约束最终保障
-  buildCandidateOrderNumber(tenantId: string, clientOrigin: string): string {
-    return `${this.buildOrderPrefix(tenantId, clientOrigin)}${this.generateRandomSuffix(4)}`;
+    // 同秒借下一秒（进程内即可：重启后时钟已经往前走了）
+    if (!this.lastSlot || this.lastSlot.date !== yymmdd) {
+      this.lastSlot = { date: yymmdd, slot: secondOfDay };
+    } else {
+      this.lastSlot.slot = secondOfDay > this.lastSlot.slot ? secondOfDay : this.lastSlot.slot + 1;
+    }
+
+    const originCode = OrderService.ORIGIN_PREFIX_CODE[clientOrigin] ?? 'X';
+    return `${yymmdd}-${originCode}${OrderService.SERVER_DEVICE_CODE}-${this.toBase34(this.lastSlot.slot)}`;
   }
 
   async generateOrderNumber(tenantId: string, clientOrigin: string): Promise<{ orderNumber: string }> {
@@ -535,6 +571,8 @@ export class OrderService {
       const clientProvidedNumber = !!data.orderNumber;
       let orderNumber = data.orderNumber
         || (await this.generateOrderNumber(tenantId, clientOrigin)).orderNumber;
+      /** 客户端声称的号没能用上时留在这里（撞号降级），便于顾客拿小票来查 */
+      let claimedOrderNumber: string | null = null;
 
       // 记账模式直接标为 PAID（无需即时收款，finance-service 后续追踪账期）
       // 其他模式统一 UNPAID，支付完成由 Finance Service 回调更新
@@ -615,6 +653,7 @@ export class OrderService {
               ...(placedAt.createdAt ? { createdAt: placedAt.createdAt } : {}),
               receivedAt: placedAt.receivedAt,
               claimedCreatedAt: placedAt.claimedCreatedAt,
+              claimedOrderNumber,
 
               cashierId: userId,  // 收银员就是创建订单的用户
               cashierName: data.cashierName || null,                       // 收银员姓名快照
@@ -638,15 +677,24 @@ export class OrderService {
           });
           break;
         } catch (e) {
-          if (this.isOrderNumberConflict(e) && clientProvidedNumber) {
+          if (this.isOrderNumberConflict(e) && clientProvidedNumber && attempt < 4) {
             /*
-              客户端给的号撞了。**不能重摇** —— 这个号已经印在顾客的小票上了，
-              换一个等于系统里和顾客手里对不上。
-              号段隔离下这本不该发生，真发生了说明设备码分配或本地序号出了问题，
-              属于要人介入的状况，必须报出来。
+              客户端给的号撞了 → **服务端自己发一个，照常建单**，把客户端声称的号
+              记进 claimedOrderNumber 留痕。
+
+              ⚠️ 这里曾经写的是抛 409，那是错的：补传每一轮都会撞上同一个号，
+              于是这单**永远建不成** —— 钱收了却没有订单，finance 也记不了账
+              （拿不到 orderId）。为了"号好看"把问题升级成了"钱悬空"。
+
+              和 clientCreatedAt 同一条通则：**收银台上凡是客户端提供的可疑数据，
+              一律降级 + 留痕，绝不用拒绝请求来处理** —— 钱已经收了，拒绝只会让钱悬空。
+              代价是小票上的号和系统不一致，但那是极罕见的双重故障
+              （号段隔离 + 时钟守卫都失效）下的可接受降级，而且有 claimedOrderNumber 可查。
             */
-            logger.error('客户端提供的订单号已存在', { orderNumber, tenantId });
-            throw new AppError(409, 'ORDER_NUMBER_CONFLICT', `订单号已存在: ${orderNumber}`);
+            logger.error('客户端订单号已存在，改用服务端发号并留痕', { orderNumber, tenantId });
+            claimedOrderNumber = orderNumber;
+            orderNumber = this.buildCandidateOrderNumber(tenantId, clientOrigin);
+            continue;
           }
           if (attempt < 4 && this.isOrderNumberConflict(e)) {
             // 服务端自己生成的号撞了（4 位随机，概率不低）：重摇后缀
