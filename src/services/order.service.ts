@@ -271,7 +271,24 @@ export class OrderService {
     return !this.trustedOrigins.includes(clientOrigin);
   }
 
-  // 订单号前缀码：按客户端入口区分，不在号码中暴露入口全名
+  /**
+   * 订单号里的渠道码：只给人扫一眼看出单从哪来，**不参与唯一性**
+   * （唯一性靠设备码做号段隔离）。
+   *
+   * ⚠️ 这张表在**两个仓库**里各有一份，加客户端类型时必须一起改，否则
+   * 同一种客户端会出现两个码（POS 发 `M01`、这边发 `X00`），
+   * 订单号从此不一致而且没人报错 —— 兜底值是 'X'，静默降级。
+   *
+   * 要一起改的三处：
+   *   1. 这里
+   *   2. POS `src/services/localOrderNumber.ts` 的 ORIGIN_CODE
+   *   3. POS 探针 `scripts/touch-probe/local-order-number.mjs` 的格式正则（写死了 [PWKUX]）
+   *
+   * 本文件 validators/order.validator.ts 里的正则用的是 `[A-Z]`，不用动。
+   *
+   * 注意：这和店家可配置的「销售渠道」（OrderSourceConfig / salesChannelId）
+   * 是两回事 —— 那个后台随时能加，这个是写死的客户端类型枚举。
+   */
   private static readonly ORIGIN_PREFIX_CODE: Record<string, string> = {
     POS: 'P',
     WEB: 'W',
