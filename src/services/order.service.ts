@@ -391,12 +391,53 @@ export class OrderService {
         所以它不需要知道自己是不是在重放。这就是幂等的意义。
       */
       if (data.id) {
-        const replay = await prisma.order.findUnique({ where: { id: data.id } });
+        const replay = await prisma.order.findUnique({
+          where: { id: data.id },
+          // 要比对内容，所以连明细一起取。只在重放时才走到这里，代价可忽略
+          include: { orderItems: { select: { quantity: true, unitPrice: true } } },
+        });
         if (replay) {
           if (replay.tenantId !== tenantId) {
             // 同一个 id 出现在别的租户名下：不是重放，是撞了或者越权，必须拒
             throw new AppError(409, 'ORDER_ID_CONFLICT', '订单 ID 已被占用');
           }
+
+          /*
+            ★ 区分「重发」和「id 撞车」。
+
+            真正的重发内容必然**一模一样**（同一单发第二次）；
+            id 撞车则必然不一样（不同顾客、不同商品、不同金额）。
+            不比对的话，撞车会**静默返回别人的订单** —— 第二单凭空消失、
+            它的钱记到第一单头上、第一单变成 OVERPAID，而调用方以为成功了。
+            那比直接报错糟得多。
+
+            这就是 Stripe 幂等键的做法：
+            "compares incoming parameters to those of the original request
+             and errors if they're not the same to prevent accidental misuse"
+
+            比对项挑的是「不同的单几乎不可能全部相同」又「重发必然相同」的几项：
+            明细条数、各项金额之和、订单类型。不做全量比对是因为
+            服务端会重算价格、补默认值，全量比反而会把正常重发误判成撞车。
+          */
+          const incomingGross = (data.items ?? []).reduce(
+            (sum, it: any) => sum + (it.unitPrice ?? 0) * (it.quantity ?? 1), 0);
+          const existingGross = replay.orderItems.reduce(
+            (sum, it) => sum + it.unitPrice * it.quantity, 0);
+          const looksLikeSameOrder =
+            replay.orderItems.length === (data.items?.length ?? 0)
+            && existingGross === incomingGross
+            && replay.orderType === data.orderType;
+
+          if (!looksLikeSameOrder) {
+            logger.error('[Order] 订单 ID 撞车：内容与已有订单不符，拒绝并要求换 ID 重试', {
+              orderId: data.id,
+              已有: { 条数: replay.orderItems.length, 金额: existingGross, 类型: replay.orderType },
+              本次: { 条数: data.items?.length ?? 0, 金额: incomingGross, 类型: data.orderType },
+            });
+            throw new AppError(409, 'ORDER_ID_COLLISION',
+              '订单 ID 与另一笔订单冲突，请用新 ID 重试');
+          }
+
           logger.info('[Order] 重放建单请求，返回已有订单', {
             orderId: replay.id, orderNumber: replay.orderNumber,
           });
