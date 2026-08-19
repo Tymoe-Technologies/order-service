@@ -686,6 +686,28 @@ model PickupNumberConfig {
   @@map("pickup_number_configs")
 }
 
+/// 事件待发板。见 migrations/20260818140000_outbox_events。
+///
+/// 「要通知的事」和业务数据写在同一个事务里，再由 relay 一条条投递。
+/// 一个事件一个 handler 一行 —— 重试只重试失败的那个，不会把已成功的重跑一遍。
+model OutboxEvent {
+  id            String    @id @default(uuid()) @db.Uuid
+  tenantId      String    @map("tenant_id") @db.Uuid
+  eventType     String    @map("event_type") @db.VarChar(50)
+  handler       String    @db.VarChar(80)
+  aggregateId   String?   @map("aggregate_id") @db.Uuid
+  payload       String                            // 事件原文，byte-exact
+  createdAt     DateTime  @default(now()) @map("created_at")
+  publishedAt   DateTime? @map("published_at")
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime  @default(now()) @map("next_attempt_at")
+  lastError     String?   @map("last_error")
+
+  @@index([publishedAt, nextAttemptAt, createdAt])
+  @@index([aggregateId])
+  @@map("outbox_events")
+}
+
 /// 幂等键存储。见 migrations/20260818120000_idempotency_store。
 ///
 /// 判重和「订单当前长什么样」解耦：记下这个 key 处理过、当时回了什么，

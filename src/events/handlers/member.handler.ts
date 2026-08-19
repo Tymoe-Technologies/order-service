@@ -113,7 +113,7 @@ async function callEarnPoints(params: {
 
 export function registerMemberHandler(bus: IEventBus): void {
   // 在线订单（WEB）：支付成功即加积分，不等 POS 完成
-  bus.on('ORDER_PAID', async (event) => {
+  bus.on('ORDER_PAID', async function member_ORDER_PAID(event) {
     const e = event as OrderPaidEvent;
 
     if (e.clientOrigin !== 'WEB') return;
@@ -151,7 +151,7 @@ export function registerMemberHandler(bus: IEventBus): void {
   });
 
   // POS/KIOSK 订单：等订单真正完成才加积分
-  bus.on('ORDER_COMPLETED', async (event) => {
+  bus.on('ORDER_COMPLETED', async function member_ORDER_COMPLETED(event) {
     const e = event as OrderCompletedEvent;
 
     if (e.clientOrigin === 'WEB') return;  // WEB 订单已在 ORDER_PAID 处理，避免重复

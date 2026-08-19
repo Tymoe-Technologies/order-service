@@ -151,7 +151,7 @@ async function createModifiersFromSnapshot(
 
 export function registerAnalyticsHandler(bus: IEventBus): void {
   // POS/KIOSK 订单创建
-  bus.on('ORDER_CREATED', async (event) => {
+  bus.on('ORDER_CREATED', async function analytics_ORDER_CREATED(event) {
     const e = event as OrderCreatedEvent;
     if (await alreadyProcessed(e.orderId)) return;
 
@@ -161,7 +161,7 @@ export function registerAnalyticsHandler(bus: IEventBus): void {
   });
 
   // 从快照创建订单（Webhook 路径）
-  bus.on('ORDER_CREATED_FROM_SNAPSHOT', async (event) => {
+  bus.on('ORDER_CREATED_FROM_SNAPSHOT', async function analytics_ORDER_CREATED_FROM_SNAPSHOT(event) {
     const e = event as OrderCreatedFromSnapshotEvent;
     if (await alreadyProcessed(e.orderId)) return;
 
@@ -171,7 +171,7 @@ export function registerAnalyticsHandler(bus: IEventBus): void {
   });
 
   // 临时订单创建（skipModifiers 时只创建 analytics）
-  bus.on('TEMPORARY_ORDER_CREATED', async (event) => {
+  bus.on('TEMPORARY_ORDER_CREATED', async function analytics_TEMPORARY_ORDER_CREATED(event) {
     const e = event as TemporaryOrderCreatedEvent;
     if (await alreadyProcessed(e.orderId)) return;
 

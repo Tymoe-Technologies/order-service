@@ -11,7 +11,7 @@ import prisma from '../../utils/prisma';
 import logger from '../../utils/logger';
 
 export function registerSnapshotHandler(bus: IEventBus): void {
-  bus.on('ORDER_PAID', async (event) => {
+  bus.on('ORDER_PAID', async function snapshot_ORDER_PAID(event) {
     const e = event as OrderPaidEvent;
 
     const snapshot = await prisma.checkoutSnapshot.findFirst({

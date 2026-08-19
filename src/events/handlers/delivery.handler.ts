@@ -12,7 +12,7 @@ import { broadcastDeliveryOrder } from '../../websocket/print-task-dispatcher';
 import { pickupNumberConfigService } from '../../services/print-setting.service';
 
 export function registerDeliveryHandler(bus: IEventBus): void {
-  bus.on('ORDER_PAID', async (event) => {
+  bus.on('ORDER_PAID', async function delivery_ORDER_PAID(event) {
     const e = event as OrderPaidEvent;
 
     // 仅 DELIVERY 类型 + 有配送地址时触发

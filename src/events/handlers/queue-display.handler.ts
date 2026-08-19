@@ -10,22 +10,22 @@ import logger from '../../utils/logger';
 
 export function registerQueueDisplayHandler(bus: IEventBus): void {
   // 订单创建（POS 下单通常直接 CONFIRMED/PREPARING）
-  bus.on('ORDER_CREATED', async (event) => {
+  bus.on('ORDER_CREATED', async function queue_display_ORDER_CREATED(event) {
     await broadcastFullOrder(event.tenantId, event.orderId);
   });
 
   // 从快照创建订单（WEB/KIOSK 支付后）
-  bus.on('ORDER_CREATED_FROM_SNAPSHOT', async (event) => {
+  bus.on('ORDER_CREATED_FROM_SNAPSHOT', async function queue_display_ORDER_CREATED_FROM_SNAPSHOT(event) {
     await broadcastFullOrder(event.tenantId, event.orderId);
   });
 
   // 订单支付成功（可能触发状态变更到 CONFIRMED）
-  bus.on('ORDER_PAID', async (event) => {
+  bus.on('ORDER_PAID', async function queue_display_ORDER_PAID(event) {
     await broadcastFullOrder(event.tenantId, event.orderId);
   });
 
   // 订单完成
-  bus.on('ORDER_COMPLETED', async (event) => {
+  bus.on('ORDER_COMPLETED', async function queue_display_ORDER_COMPLETED(event) {
     await broadcastFullOrder(event.tenantId, event.orderId);
   });
 
