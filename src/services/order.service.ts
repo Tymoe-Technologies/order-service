@@ -134,6 +134,8 @@ interface CreateOrderData {
   tableNumber?: string;
   customerName?: string;
   customerPhone?: string;
+  /** 离线补传：这单的小票已经印出去了且没有取餐号，别再补发一个 */
+  skipPickupNumber?: boolean;
   memberId?: string;  // 会员 ID（可选，匿名订单不设置）
   items: CreateOrderItem[];
   notes?: string;
@@ -709,7 +711,17 @@ class OrderService {
       // 取餐号不是稀缺资源，少量废单不影响运营
       let posPickupNumber: number | null = null;
       let posPickupDisplay: string | null = null;
-      if (clientOrigin === 'POS') {
+      /*
+        ★ 离线补传的单不发取餐号。
+
+        小票是**离线那一刻**打的，上面没有号（本地发不出来：取餐号要原子自增、
+        不能有空洞）。补传时如果照常发一个，就成了「顾客手里那张没号、系统里有号」——
+        店员照着叫，叫的是顾客不知道的号。和上面 orderNumber 那段是同一个形状的坑。
+
+        字段可空、消费方（叫号屏、配送 handler、小票模板）都做了空处理，
+        所以「没有号」本来就是合法状态，不需要任何兜底。
+      */
+      if (clientOrigin === 'POS' && !data.skipPickupNumber) {
         const pickup = await this.generatePickupNumber(tenantId, clientOrigin);
         posPickupNumber = pickup.pickupNumber;
         posPickupDisplay = pickup.pickupDisplay;

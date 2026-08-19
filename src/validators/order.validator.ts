@@ -4,6 +4,8 @@ export const createOrderSchema = Joi.object({
   orderType: Joi.string().valid('DINE_IN', 'TAKEOUT', 'DELIVERY').required(),
   clientOrigin: Joi.string().valid('POS', 'WEB', 'KIOSK').default('POS'),
   tableNumber: Joi.string().max(50).optional().allow(null),
+  // 离线补传：小票上没有取餐号，别补发一个（见 order.service 里那段说明）
+  skipPickupNumber: Joi.boolean().optional(),
   customerName: Joi.string().max(255).optional().allow(null),
   customerPhone: Joi.string().max(50).optional().allow(null),
   memberId: Joi.string().uuid().optional().allow(null),  // 会员 ID（可选）
