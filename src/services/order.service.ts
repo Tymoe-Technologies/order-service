@@ -2,6 +2,7 @@ import prisma from '../utils/prisma';
 import { pickupNumberConfigService } from './print-setting.service';
 import { AppError } from '../middleware/errorHandler';
 import { runWithIdempotency, fingerprintOf } from './idempotency.service';
+import { enqueueEvent } from './outbox.service';
 import logger from '../utils/logger';
 import { assertCreditAvailable } from './credit.service';
 import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
@@ -718,7 +719,16 @@ class OrderService {
       let order: Awaited<ReturnType<typeof prisma.order.create>>;
       for (let attempt = 0; ; attempt++) {
         try {
-          order = await prisma.order.create({
+          /*
+            ★ 订单和「要发的通知」写在同一个事务里。
+
+            原来是 create 提交之后再 eventBus.emit —— 进程在这中间挂掉，
+            订单在库里、打印/统计/叫号屏一个都没收到，而且之后再也不会重试。
+            这道缝没法靠"重试几次"补上：改库和发通知是两个系统，
+            唯一的办法是让通知本身变成同一笔数据库写入的一部分。
+          */
+          order = await prisma.$transaction(async (tx) => {
+          const created = await tx.order.create({
             data: {
               // 订单主键用 UUID v7（时间有序），改善高频写入时的索引局部性；
               // 仍是标准 128-bit UUID，与 @db.Uuid 列和现有 v4 老数据完全兼容
@@ -791,6 +801,24 @@ class OrderService {
               orderItems: { include: { orderItemModifiers: true } },
             },
           });
+
+          // 和上面的 create 同一个事务：要么订单和通知都在，要么都不在
+          await enqueueEvent(tx, {
+            type: 'ORDER_CREATED',
+            eventId: uuidv4(),
+            timestamp: new Date(),
+            tenantId,
+            orderId: created.id,
+            orderNumber: created.orderNumber,
+            clientOrigin,
+            orderType: data.orderType,
+            paymentStatus,
+            items: data.items,
+            order: created,
+          } as any);
+
+          return created;
+          });
           break;
         } catch (e) {
           if (this.isOrderNumberConflict(e) && clientProvidedNumber && attempt < 4) {
@@ -832,20 +860,11 @@ class OrderService {
         totalAmount
       });
 
-      // 发出事件：打印、分析等副作用由 handler 处理
-      eventBus.emit({
-        type: 'ORDER_CREATED',
-        eventId: uuidv4(),
-        timestamp: new Date(),
-        tenantId,
-        orderId: order.id,
-        orderNumber: order.orderNumber,
-        clientOrigin,
-        orderType: data.orderType,
-        paymentStatus,
-        items: data.items,
-        order,
-      });
+      /*
+        这里原来有一次 eventBus.emit('ORDER_CREATED')。已经挪进上面建单的事务里
+        （enqueueEvent），由 relay 负责投递 —— 见 outbox.service。
+        **别在这里补一次 emit**：那样每个 handler 会跑两遍。
+      */
 
       // PLATFORM / ACCOUNT 订单：通知 finance-service 写财务分录（非阻塞）
       if (isAccountPayment || isPlatformCollect) {

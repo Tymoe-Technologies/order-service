@@ -20,6 +20,7 @@ import { startScheduledOrderRelease, stopScheduledOrderRelease } from './jobs/sc
 import { startDeliveryConfirmationWatchdog, stopDeliveryConfirmationWatchdog } from './jobs/delivery-confirmation-watchdog';
 import { startAutoDeliveryConfirmation, stopAutoDeliveryConfirmation } from './jobs/auto-delivery-confirmation';
 import { purgeExpiredIdempotencyKeys } from './services/idempotency.service';
+import { startOutboxRelay } from './services/outbox.service';
 
 const PORT = process.env.PORT || 3002;
 
@@ -131,6 +132,13 @@ const startServer = async () => {
     // 支付成功 15 分钟内员工未确认时，系统自动用默认备餐时间建配送单；
     // 建单失败则自动取消订单 + 退款 + Twilio 告警（见 auto-delivery-confirmation.ts）
     startAutoDeliveryConfirmation();
+
+    // ========== 启动事件待发板 relay ==========
+    /*
+      间隔短是因为**厨房打印在这条路上** —— 出单慢一拍店员就会抱怨。
+      500ms 空转的成本是一条走索引的查询，可以忽略。
+    */
+    startOutboxRelay(500);
 
     // ========== 幂等键过期清理 ==========
     /*

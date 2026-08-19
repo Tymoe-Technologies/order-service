@@ -23,20 +23,20 @@ async function triggerPrint(order: any, tenantId: string, clientOrigin: string):
 
 export function registerPrintHandler(bus: IEventBus): void {
   // POS/KIOSK 创建订单后直接打印（POS 本地打印，不走 WebSocket）
-  bus.on('ORDER_CREATED', async (event) => {
+  bus.on('ORDER_CREATED', async function print_ORDER_CREATED(event) {
     const e = event as OrderCreatedEvent;
     if (e.clientOrigin === 'POS') return; // POS 本地打印，不走 WebSocket
     await triggerPrint(e.order, e.tenantId, e.clientOrigin);
   });
 
   // 从快照创建订单（Webhook 路径，支付已成功，直接打印）
-  bus.on('ORDER_CREATED_FROM_SNAPSHOT', async (event) => {
+  bus.on('ORDER_CREATED_FROM_SNAPSHOT', async function print_ORDER_CREATED_FROM_SNAPSHOT(event) {
     const e = event as OrderCreatedFromSnapshotEvent;
     await triggerPrint(e.order, e.tenantId, 'WEB');
   });
 
   // 支付成功（临时订单 PENDING → CONFIRMED 路径，非预约单）
-  bus.on('ORDER_PAID', async (event) => {
+  bus.on('ORDER_PAID', async function print_ORDER_PAID(event) {
     const e = event as OrderPaidEvent;
     // 仅 WEB 普通订单从 PENDING 变为 CONFIRMED/COMPLETED 时触发打印
     // 预约单 previousStatus === 'SCHEDULED'，到时间才打印，不在此处理
