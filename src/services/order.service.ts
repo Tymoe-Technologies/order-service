@@ -1918,11 +1918,11 @@ class OrderService {
     });
 
     if (!snapshot) {
-      throw new AppError('Snapshot not found', 404);
+      throw new AppError(404, 'SNAPSHOT_NOT_FOUND', 'Snapshot not found');
     }
 
     if (snapshot.status === 'USED' || snapshot.status === 'EXPIRED') {
-      throw new AppError('Snapshot is no longer valid', 400);
+      throw new AppError(400, 'SNAPSHOT_INVALID', 'Snapshot is no longer valid');
     }
 
     // 2. 如果是记账渠道，提前校验授信额度（在创建订单前，失败不留脏数据）
@@ -2405,7 +2405,7 @@ class OrderService {
     });
 
     if (!order) {
-      throw new AppError('Order not found', 404);
+      throw new AppError(404, 'ORDER_NOT_FOUND', 'Order not found');
     }
 
     const updated = await prisma.order.update({
@@ -2448,11 +2448,11 @@ class OrderService {
     });
 
     if (!order) {
-      throw new AppError('Order not found', 404);
+      throw new AppError(404, 'ORDER_NOT_FOUND', 'Order not found');
     }
 
     if (order.totalAmount !== 0) {
-      throw new AppError('Order total is not zero, payment required', 400);
+      throw new AppError(400, 'ORDER_TOTAL_NOT_ZERO', 'Order total is not zero, payment required');
     }
 
     // 不覆盖 paymentMethod —— 保留收银员实际点的(可能是 CASH/CARD,POS UI 强制选)。
@@ -2632,11 +2632,11 @@ class OrderService {
     });
 
     if (!order) {
-      throw new AppError('订单不存在', 404);
+      throw new AppError(404, 'ORDER_NOT_FOUND', '订单不存在');
     }
     if (order.consumerId !== consumerId) {
-      // 不透露"订单存在但不属于你"，统一按不存在处理
-      throw new AppError('订单不存在', 404);
+      // 不透露"订单存在但不属于你"，统一按不存在处理（含 code/message 都要一致）
+      throw new AppError(404, 'ORDER_NOT_FOUND', '订单不存在');
     }
 
     const [storeTimezone, refunds] = await Promise.all([
