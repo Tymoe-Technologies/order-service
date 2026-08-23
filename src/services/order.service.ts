@@ -2,6 +2,7 @@ import prisma from '../utils/prisma';
 import { pickupNumberConfigService } from './print-setting.service';
 import { AppError } from '../middleware/errorHandler';
 import { runWithIdempotency, fingerprintOf } from './idempotency.service';
+import { toE164 } from '../utils/phone';
 import { enqueueEvent } from './outbox.service';
 import logger from '../utils/logger';
 import { assertCreditAvailable } from './credit.service';
@@ -755,7 +756,8 @@ class OrderService {
               orderSource: clientOrigin,
               tableNumber: data.tableNumber || null,
               customerName: data.customerName || null,
-              customerPhone: data.customerPhone || null,
+              // 统一成 E.164 存；解析不出就原样保留（见 utils/phone）
+              customerPhone: toE164(data.customerPhone),
               memberId: data.memberId || null,
               channelConfigId: data.salesChannelId || null,
               channelName: channelConfig?.sourceName || null,
@@ -1950,7 +1952,7 @@ class OrderService {
             consumerId: (snapshot as any).consumerId || undefined,
             memberId: memberId || undefined,
             customerName: snapshot.customerName,
-            customerPhone: snapshot.customerPhone,
+            customerPhone: toE164(snapshot.customerPhone),
             customerEmail: (snapshot as any).customerEmail || undefined,
             subtotal: pricing.subtotal,
             taxAmount: pricing.taxAmount,

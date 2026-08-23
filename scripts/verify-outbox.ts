@@ -19,6 +19,33 @@ const TENANT = process.env.VERIFY_TENANT_ID || 'a6aee8e9-fc5f-419a-8504-3d106b1a
 const USER = '00000000-0000-0000-0000-000000000001';
 const MARK = 'OUTBOX-VERIFY';
 
+/*
+  ⚠️ 这个脚本要求**没有别的 relay 在跑**。
+
+  order-service 起来之后 `startOutboxRelay` 每 500ms 认领一批 —— 它会把本脚本
+  刚入板的行抢先领走并投递掉，于是脚本自己 drain 时一条都拿不到，
+  「进程挂掉后通知照样投出去」那条就假红。
+  （实际发生过：本地 3002 开着 dev server，脚本从 9/9 掉到 7~8/9，
+  错误信息还是空的 —— 因为根本不是投递失败，是压根没认领到。）
+
+  用一个专属的 handler 名做隔离做不到（真 handler 是共享的），
+  所以这里显式检查：本机 order-service 在跑就直接拒绝执行，而不是给一个假红。
+*/
+const ORDER_HEALTH = process.env.VERIFY_ORDER_HEALTH || 'http://localhost:3002/health';
+async function ensureNoRelayRunning() {
+  try {
+    const res = await fetch(ORDER_HEALTH, { signal: AbortSignal.timeout(1500) });
+    if (res.ok) {
+      console.error(
+        '\n  ⛔ 检测到本机 order-service 正在运行（' + ORDER_HEALTH + '）。\n'
+        + '     它的 outbox relay 会抢走本脚本入板的事件，测出来的结果没有意义。\n'
+        + '     请先停掉 dev server 再跑，或设 VERIFY_ORDER_HEALTH 指向一个不存在的地址。\n',
+      );
+      process.exit(2);
+    }
+  } catch { /* 连不上 = 没在跑，正是我们要的 */ }
+}
+
 const rows: Array<[string, boolean, string]> = [];
 const T = (n: string, ok: boolean, note = '') => rows.push([n, ok, note]);
 
@@ -49,6 +76,7 @@ const cleanup = async () => {
 };
 
 async function main() {
+  await ensureNoRelayRunning();
   await cleanup();
 
   /*
