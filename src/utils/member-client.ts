@@ -69,3 +69,34 @@ export async function getMemberIdByConsumerId(consumerId: string): Promise<strin
     return null;
   }
 }
+
+/**
+ * 通过 memberId 反查它绑定的 consumerId（服务间内部调用）。
+ *
+ * ## 为什么建单时要多这一跳
+ * POS 收银台只认「会员」（店员输手机号 → memberId），而 consumer app 的订单列表
+ * 是按 `orders.consumer_id` 查的。不在建单时把这个 id 落下来，那笔单在顾客自己的
+ * 订单记录里**永远看不到** —— 实际发生过：同一个人同一天的两笔网单看得到、
+ * 一笔 POS 单看不到，差别就在这一列。
+ *
+ * ## 拿不到就算了，绝不挡住建单
+ * 会员服务不可达、或者这是个还没绑账号的纯线下会员 —— 两种都返回 null。
+ * 订单照常建，`consumer_id` 留空，由读取侧的自愈补上（见 getConsumerOrders）。
+ * 收银台上任何外部依赖都不能变成"收不了钱"。
+ */
+export async function getConsumerIdByMemberId(memberId: string): Promise<string | null> {
+  if (!memberId) return null;
+  try {
+    const url = `${MEMBER_SERVICE_URL}/internal/members/${encodeURIComponent(memberId)}/consumer`;
+    const response = await fetch(url, { headers: { 'x-service-api-key': INTERNAL_SERVICE_KEY } });
+    if (!response.ok) {
+      logger.warn('[MemberClient] 查询会员绑定的 consumer 失败', { memberId, status: response.status });
+      return null;
+    }
+    const body = await response.json() as any;
+    return body?.data?.consumerId || null;
+  } catch (error) {
+    logger.warn('[MemberClient] 会员服务不可达，consumer_id 留空由读取侧自愈', { memberId, error });
+    return null;
+  }
+}

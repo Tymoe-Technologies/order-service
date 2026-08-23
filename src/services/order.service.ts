@@ -3,6 +3,7 @@ import { pickupNumberConfigService } from './print-setting.service';
 import { AppError } from '../middleware/errorHandler';
 import { runWithIdempotency, fingerprintOf } from './idempotency.service';
 import { toE164 } from '../utils/phone';
+import { getConsumerIdByMemberId } from '../utils/member-client';
 import { enqueueEvent } from './outbox.service';
 import logger from '../utils/logger';
 import { assertCreditAvailable } from './credit.service';
@@ -728,6 +729,14 @@ class OrderService {
         posPickupDisplay = pickup.pickupDisplay;
       }
 
+      /*
+        建单前解析会员绑定的 consumer。放在事务**外面** ——
+        网络调用不该占着数据库连接。失败返回 null，不影响建单。
+      */
+      const resolvedConsumerId = data.memberId
+        ? await getConsumerIdByMemberId(data.memberId)
+        : null;
+
       // 用 DB @unique 约束作为最终保障，碰撞时重新生成后缀重试（极小概率）
       let order: Awaited<ReturnType<typeof prisma.order.create>>;
       for (let attempt = 0; ; attempt++) {
@@ -759,6 +768,13 @@ class OrderService {
               // 统一成 E.164 存；解析不出就原样保留（见 utils/phone）
               customerPhone: toE164(data.customerPhone),
               memberId: data.memberId || null,
+              /*
+                会员绑定的 consumer 账号。POS 只给 memberId，这里反查一次补上 ——
+                consumer app 的订单列表按 consumer_id 查，不落这一列，
+                这笔单在顾客自己的订单记录里就永远看不到。
+                拿不到（服务不可达 / 纯线下会员没绑账号）就留空，读取侧会自愈。
+              */
+              consumerId: resolvedConsumerId,
               channelConfigId: data.salesChannelId || null,
               channelName: channelConfig?.sourceName || null,
 
@@ -2456,6 +2472,38 @@ class OrderService {
     const page = options.page || 1;
     const limit = Math.min(options.limit || 10, 50);
     const skip = (page - 1) * limit;
+
+    /*
+      ★ 查之前先自愈：把这个 consumer 名下、只挂了 memberId 却没有 consumer_id
+      的历史订单补上。
+
+      建单时已经会解析一次（见 createOrderInner），但有两种情况补不到：
+        · 那次会员服务不可达
+        · **纯线下会员后来才在 app 注册** —— 绑定发生在下单之后，
+          他此前所有 POS 单的 consumer_id 都是空的
+
+      为什么放在读取侧而不是让 member-service 在绑定时推一条过来：
+      推送要么丢（fire-and-forget），要么得在 member-service 里再建一套待发板。
+      而这里是**自愈**：每次顾客打开订单记录都会顺手补一遍，丢了下次自己好，
+      和现金流水补录是同一个套路。成本是每页一次内部调用 + 一条带索引的 UPDATE，
+      订单历史本来就是低频页面。
+
+      任何一步失败都不影响查询本身 —— 补不上就还是只看到已经有 consumer_id 的那些。
+    */
+    try {
+      const memberId = await getMemberIdByConsumerId(consumerId);
+      if (memberId) {
+        const { count } = await prisma.order.updateMany({
+          where: { memberId, consumerId: null },
+          data: { consumerId },
+        });
+        if (count > 0) {
+          logger.info('[Order] 补齐历史订单的 consumer_id', { consumerId, memberId, count });
+        }
+      }
+    } catch (e) {
+      logger.warn('[Order] 补齐 consumer_id 失败，本次只返回已关联的订单', { consumerId, e });
+    }
 
     const [orders, total] = await prisma.$transaction([
       prisma.order.findMany({
