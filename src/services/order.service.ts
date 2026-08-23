@@ -2584,6 +2584,8 @@ class OrderService {
         subtotal: true,
         taxAmount: true,
         discountAmount: true,
+        // 渠道折扣单独存字段、也单独从 totalAmount 里减掉，明细要对得上就必须一起给
+        channelDiscountAmount: true,
         serviceFee: true,
         deliveryFee: true,
         platformFee: true,
