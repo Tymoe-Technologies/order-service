@@ -3,6 +3,53 @@ import axios from 'axios'
 
 const prisma = new PrismaClient()
 
+const FINANCE_SERVICE_URL = process.env.FINANCE_SERVICE_URL || 'http://localhost:7007'
+
+/**
+ * 向 finance 的平台费策略服务取消费者平台费（单位：分）
+ *
+ * 费率的唯一权威来源是 finance 的 platform_fee_policies 表，这里只负责问、不负责算。
+ *
+ * 取不到时返回 0 而不是回退某个默认费率：计价是下单主链路，不能因为 finance 抖动就
+ * 阻断结账；而在“少收”和“按一个可能已经过期的数字乱收”之间，只能选少收。
+ * 真发生了会留 error 日志，靠对账兜底。
+ */
+async function quoteConsumerPlatformFee(params: {
+  tenantId: string
+  skipFees: boolean
+  breakdown: {
+    subtotal: number
+    tax: number
+    tip: number
+    deliveryFee: number
+    giftCardDeduction: number
+  }
+}): Promise<number> {
+  if (params.skipFees) return 0
+
+  try {
+    const res = await axios.post<{ data?: { consumerFee?: number } }>(
+      `${FINANCE_SERVICE_URL}/internal/platform-fee/quote`,
+      {
+        tenantId: params.tenantId,
+        channel: 'ONLINE',
+        breakdown: params.breakdown,
+      },
+      {
+        headers: { 'x-service-api-key': INTERNAL_SERVICE_KEY },
+        timeout: 3000,
+      }
+    )
+    return res.data?.data?.consumerFee ?? 0
+  } catch (err: any) {
+    console.error('[CheckoutSnapshot] 平台费报价失败，本单按 0 计', {
+      tenantId: params.tenantId,
+      err: err?.message,
+    })
+    return 0
+  }
+}
+
 interface CreateSnapshotDto {
   orderType: 'TAKEOUT' | 'DINE_IN' | 'DELIVERY'
   consumerId?: string  // 已登录用户的 Consumer UUID
@@ -662,12 +709,23 @@ export async function createCheckoutSnapshot(
     // 6. 基础订单金额（不含 platformFee）
     const baseTotal = discountedSubtotal + taxAmount + tipAmount + deliveryFee
 
-    // 7. 平台费：记账渠道免收；其他渠道 1% × 非礼品卡支付部分（税前）
+    // 7. 消费者平台费：向 finance 的平台费策略服务取，本地不再硬编码费率。
+    //    原来这里写死 1%，consumer-app 的结账页又写了一遍，调价要同时发两个版；
+    //    现在费率统一存 finance 的 platform_fee_policies，改配置即可生效。
+    //    记账渠道（CREDIT_ACCOUNT）不走收单通道，两种平台费都不收。
     const isAccountChannel = !!channelConfig && channelConfig.checkoutMode === 'CREDIT_ACCOUNT'
-    const preTaxBase = discountedSubtotal + tipAmount + deliveryFee
     const gcDeductionEstimate = Math.max(0, Math.min(data.giftCardDeductionEstimate || 0, baseTotal))
-    const stripePayablePart = Math.max(0, preTaxBase - gcDeductionEstimate)
-    const platformFee = isAccountChannel ? 0 : Math.round(stripePayablePart * 0.01)
+    const platformFee = await quoteConsumerPlatformFee({
+      tenantId: merchantId,
+      skipFees: isAccountChannel,
+      breakdown: {
+        subtotal: discountedSubtotal,
+        tax: taxAmount,
+        tip: tipAmount,
+        deliveryFee,
+        giftCardDeduction: gcDeductionEstimate,
+      },
+    })
 
     // 8. 总价 = 基础金额 + 平台费
     const total = baseTotal + platformFee
