@@ -162,11 +162,20 @@ model Order {
 model OrderItem {
   id             String  @id @default(uuid()) @db.Uuid
   orderId        String  @map("order_id") @db.Uuid
+  // 商品行 = catalog_items.id；耗材行 = catalog_supplies.id（看 lineKind 区分）
   itemId         String  @map("item_id") @db.Uuid
   itemName       String  @map("item_name") @db.VarChar(255)
   quantity       Int
   unitPrice      Int     @map("unit_price")    // 单价（分 cents）
   totalPrice     Int     @map("total_price")   // 总价（分 cents）
+
+  // 行类型：耗材（餐具/袋子/打包费）作为独立订单行存在，这样小票打印、单独退款、
+  // 销量与成本统计、税额计算全都复用商品行那套逻辑，不必到处加分支。
+  // 默认 PRODUCT，存量数据行为不变。
+  lineKind       OrderLineKind @default(PRODUCT) @map("line_kind")
+  // 耗材行专用：AUTO 是系统按规则自动加的，SELECTED 是顾客自己选的。
+  // 小票和客服退款要区分——顾客没主动选却被收了钱，是投诉高发点。
+  supplyOrigin   String?  @map("supply_origin") @db.VarChar(20)
   
   // 商品级别折扣（单位：分 cents）
   discountAmount Int     @default(0) @map("discount_amount")
@@ -359,6 +368,12 @@ enum OrderType {
   TAKEOUT
   DELIVERY
   GIFT_CARD  // 礼品卡购买订单
+}
+
+// 订单行类型：区分卖的是商品还是耗材（餐具/购物袋/打包费）
+enum OrderLineKind {
+  PRODUCT
+  SUPPLY
 }
 
 enum OrderSource {

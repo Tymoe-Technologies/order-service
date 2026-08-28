@@ -105,10 +105,18 @@ interface CreateSnapshotDto {
   giftCardDeductionEstimate?: number
   // 销售渠道 ID（SalesChannelConfig.id），服务端从 DB 读取折扣规则，防止前端篡改金额
   salesChannelId?: string
+  /**
+   * 顾客对耗材的答复（餐具/购物袋等）。只传 ASK / OPT_IN 的答复：
+   * quantity=0 表示明确不要，**不传**表示还没答复 —— ASK 模式必须区分这两者。
+   * AUTO 的耗材不用传，传了也会被 item-management 忽略。
+   */
+  supplySelections?: Array<{ supplyId: string; quantity: number }>
 }
 
 interface SnapshotPricing {
   subtotal: number
+  /** 耗材小计（分）。已包含在 subtotal 内，单列一份供前端分行展示 */
+  supplySubtotal?: number
   taxAmount: number
   tipAmount: number
   platformFee: number
@@ -262,6 +270,66 @@ async function getComboPrices(merchantId: string, comboIds: string[], channelCod
   } catch (error) {
     console.error('[CheckoutSnapshot] Failed to fetch combo prices:', error)
     throw new Error('Failed to fetch combo prices from Item Service')
+  }
+}
+
+/** item-management 报价出来的一条耗材行 */
+interface QuotedSupplyLine {
+  supply_id: string
+  name: string
+  quantity: number
+  unit_price: number   // 分
+  total_price: number  // 分
+  is_waived: boolean
+  prompt_mode: 'ASK' | 'OPT_IN' | 'AUTO'
+  origin: 'auto' | 'selected'
+  tax_rates: any[]
+}
+
+interface SupplyQuote {
+  lines: QuotedSupplyLine[]
+  total: number
+  /** ASK 模式但顾客没给答复的耗材，非空就不允许下单 */
+  missingRequired: Array<{ supply_id: string; name: string }>
+}
+
+/**
+ * 向 item-management 要耗材报价（餐具 / 购物袋 / 配送打包费）。
+ *
+ * 金额一定要问后端：满额免收的门槛、份数上限、AUTO 收几份全是商家配的规则，
+ * 信客户端提交的耗材金额等于让顾客自己决定该付多少。
+ *
+ * 出错时**不静默跳过**——耗材可能是 AUTO 的打包费，漏了就是少收钱；
+ * 也可能是 ASK 的餐具，漏了就是该问没问。直接抛出去让结账失败，比悄悄算错强。
+ */
+async function quoteSupplies(params: {
+  merchantId: string
+  orderType: string
+  channelCode?: string
+  itemsSubtotal: number
+  selections: Array<{ supplyId: string; quantity: number }>
+}): Promise<SupplyQuote> {
+  const apiGatewayUrl = process.env.API_GATEWAY_URL || 'http://localhost:8000'
+  try {
+    const response = await axios.post(
+      `${apiGatewayUrl}/api/public/merchants/${params.merchantId}/supplies/quote`,
+      {
+        orderType: params.orderType,
+        salesChannelCode: params.channelCode,
+        itemsSubtotal: params.itemsSubtotal,
+        selections: params.selections,
+      },
+      { headers: { 'X-Merchant-Id': params.merchantId }, timeout: 5000 }
+    )
+    const data = response.data?.data ?? {}
+    return {
+      lines: data.lines ?? [],
+      total: data.total ?? 0,
+      missingRequired: data.missing_required ?? [],
+    }
+  } catch (error: any) {
+    console.error('[CheckoutSnapshot] 耗材报价失败:', error?.message)
+    throw new Error('Failed to fetch supply quote from Item Service')
   }
 }
 
@@ -579,10 +647,13 @@ export async function createCheckoutSnapshot(
     })))
 
     // 3. 重新计算订单价格（所有计算保持在分的单位）
-    const subtotal = verifiedItems.reduce(
+    // 这里的 subtotal 只含商品/套餐 —— 折扣、奖励都只能打在商品上，耗材（袋子、
+    // 打包费）不参与打折，所以它要等折扣算完之后再单独并进来（见步骤 3.7）
+    const productSubtotal = verifiedItems.reduce(
       (sum, item) => sum + item.unitPrice * item.quantity,
       0
     )  // 分
+    const subtotal = productSubtotal
 
     // 3.5 积分奖励折扣（Consumer 携带 grantedRewardId 时校验并计算折扣）
     let discountAmount = 0
@@ -614,15 +685,42 @@ export async function createCheckoutSnapshot(
       }
     }
 
-    // 折后小计（用于税费计算）
+    // 折后商品小计（用于税费计算）
     const discountedSubtotal = subtotal - discountAmount - channelDiscountAmount
+
+    // 3.7 耗材报价（餐具/购物袋/配送打包费）
+    //
+    // 必须排在折扣之后：满额免收的门槛看的是顾客实际付的商品钱，
+    // 拿折前金额去判断会出现「打完折没到门槛却免了打包费」。
+    const supplyQuote = await quoteSupplies({
+      merchantId,
+      orderType: data.orderType,
+      channelCode,
+      itemsSubtotal: discountedSubtotal,
+      selections: data.supplySelections ?? [],
+    })
+
+    // ASK 类耗材（餐具）没答复就不许下单。这不是前端校验能替代的：
+    // 「不问不给」是法规要求，服务端必须自己拦一道。
+    if (supplyQuote.missingRequired.length > 0) {
+      return {
+        success: false,
+        error: 'SUPPLY_SELECTION_REQUIRED',
+        message: `Please answer the supply options: ${supplyQuote.missingRequired.map(m => m.name).join(', ')}`,
+      }
+    }
+
+    const supplySubtotal = supplyQuote.total
+    // 耗材行也进 orderItems，所以 subtotal 必须把它算进去，
+    // 否则 subtotal ≠ Σ orderItems.totalPrice，对账时两边对不上
+    const subtotalWithSupplies = subtotal + supplySubtotal
 
     // 4. 逐行计税：每行按该商品自身税率计税（税率并集乘整单会对不该征税的商品征税），
     //    折扣按各行小计占比分摊到行后再计税，Σ行折扣 = 总折扣（末行吃余数）。
     //    行内再分段：商品基础价一段、每个收费选项一段，选项可以有自己的税率
     //    （免税饮品 + 收税配料这种组合，整行套商品税率会漏收配料的税）。
     const totalDiscount = discountAmount + channelDiscountAmount
-    const taxAmount = calculateOrderTax(  // 分
+    const productTax = calculateOrderTax(  // 分
       verifiedItems.map(vi => {
         const lineSubtotal = vi.unitPrice * vi.quantity
         // 套餐行按子项标价权重分摊，普通商品行按「基础价 + 各选项」分段；
@@ -635,7 +733,23 @@ export async function createCheckoutSnapshot(
       }),
       totalDiscount
     )
-    console.log('[CheckoutSnapshot] Per-line tax total:', taxAmount)
+
+    // 耗材单独走一次计税，折扣传 0 —— 不能跟商品行合起来调用：
+    // calculateOrderTax 会把折扣按行小计分摊到**每一行**，耗材混进去就等于
+    // 把商品的折扣分了一部分到袋子上，商品那边少扣、袋子那边白扣
+    const supplyTax = calculateOrderTax(
+      supplyQuote.lines.map(line => ({
+        lineSubtotal: line.total_price,
+        portions: [{
+          weight: line.total_price,
+          taxRates: extractTaxRatesFromRelations(line.tax_rates),
+        }] as TaxablePortion[],
+      })),
+      0
+    )
+
+    const taxAmount = productTax + supplyTax
+    console.log('[CheckoutSnapshot] Per-line tax total:', taxAmount, '(商品', productTax, '耗材', supplyTax, ')')
 
     // 5. 小费由用户决定，直接使用
     const tipAmount = data.tipAmount || 0
@@ -644,8 +758,8 @@ export async function createCheckoutSnapshot(
     const deliveryFee = data.deliveryFee || 0          // 向顾客收取的配送费（分）
     const uberDeliveryFee = data.uberDeliveryFee || 0  // Uber 实际报价的成本（分）
 
-    // 6. 基础订单金额（不含 platformFee）
-    const baseTotal = discountedSubtotal + taxAmount + tipAmount + deliveryFee
+    // 6. 基础订单金额（不含 platformFee）。耗材不打折，所以是折后商品 + 耗材原价
+    const baseTotal = discountedSubtotal + supplySubtotal + taxAmount + tipAmount + deliveryFee
 
     // 7. 消费者平台费：向 finance 的平台费策略服务取，本地不再硬编码费率。
     //    原来这里写死 1%，consumer-app 的结账页又写了一遍，调价要同时发两个版；
@@ -657,7 +771,8 @@ export async function createCheckoutSnapshot(
       tenantId: merchantId,
       skipFees: isAccountChannel,
       breakdown: {
-        subtotal: discountedSubtotal,
+        // 耗材也是顾客实付的一部分，平台费基数要含它
+        subtotal: discountedSubtotal + supplySubtotal,
         tax: taxAmount,
         tip: tipAmount,
         deliveryFee,
@@ -676,7 +791,8 @@ export async function createCheckoutSnapshot(
       if (diff > tolerance) {
         // 价格差异较大，返回新价格让用户确认
         const pricing: SnapshotPricing = {
-          subtotal,
+          subtotal: subtotalWithSupplies,
+          supplySubtotal,
           taxAmount,
           tipAmount,
           platformFee,
@@ -697,7 +813,21 @@ export async function createCheckoutSnapshot(
     // 9. 创建快照（使用后端计算的价格）
     const expiresAt = new Date(Date.now() + 30 * 60 * 1000) // 30 分钟后过期
 
-    console.log('[CheckoutSnapshot] Creating snapshot with pricing:', { subtotal, discountAmount, channelDiscountAmount, taxAmount, platformFee, tipAmount, deliveryFee, total })
+    console.log('[CheckoutSnapshot] Creating snapshot with pricing:', { subtotal: subtotalWithSupplies, supplySubtotal, discountAmount, channelDiscountAmount, taxAmount, platformFee, tipAmount, deliveryFee, total })
+
+    // 耗材行拼成和商品行同构的形状，一起存进快照 —— 建订单时统一 map 成 OrderItem，
+    // isSupply 标记让落库那步知道该写 lineKind=SUPPLY
+    const supplySnapshotLines = supplyQuote.lines.map(line => ({
+      itemId: line.supply_id,
+      itemName: line.name,
+      quantity: line.quantity,
+      unitPrice: line.unit_price,
+      isSupply: true,
+      supplyOrigin: line.origin === 'auto' ? 'AUTO' : 'SELECTED',
+      isWaived: line.is_waived,
+      taxRates: extractTaxRatesFromRelations(line.tax_rates),
+    }))
+
     const snapshot = await prisma.checkoutSnapshot.create({
       data: {
         merchantId,
@@ -707,9 +837,10 @@ export async function createCheckoutSnapshot(
         customerPhone: data.customer.phone,
         customerEmail: data.customer.email,
         // 商品行/套餐行两种形状的联合类型让 Prisma 的 JSON 类型推导过不去，转成 any（存的就是普通JSON快照）
-        items: verifiedItems as any,
+        items: [...verifiedItems, ...supplySnapshotLines] as any,
         pricing: {
-          subtotal,
+          subtotal: subtotalWithSupplies,
+          supplySubtotal,
           taxAmount,
           tipAmount,
           platformFee,
@@ -733,7 +864,8 @@ export async function createCheckoutSnapshot(
 
     // 转换为美元返回给前端
     const pricing: SnapshotPricing = {
-      subtotal: subtotal / 100,
+      subtotal: subtotalWithSupplies / 100,
+      supplySubtotal: supplySubtotal / 100,
       taxAmount: taxAmount / 100,
       tipAmount: (data.tipAmount || 0) / 100,
       platformFee: platformFee / 100,

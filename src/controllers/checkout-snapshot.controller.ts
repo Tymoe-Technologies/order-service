@@ -17,7 +17,7 @@ export async function createSnapshot(req: Request, res: Response) {
       })
     }
 
-    const { orderType, customer, items, tipAmount, notes, expectedTotal, customLabelData, deliveryAddress, consumerId, grantedRewardId, deliveryFee, uberDeliveryFee, deliveryQuoteId, isScheduled, scheduledAt, salesChannelId, giftCardDeductionEstimate } = req.body
+    const { orderType, customer, items, tipAmount, notes, expectedTotal, customLabelData, deliveryAddress, consumerId, grantedRewardId, deliveryFee, uberDeliveryFee, deliveryQuoteId, isScheduled, scheduledAt, salesChannelId, giftCardDeductionEstimate, supplySelections } = req.body
 
     // 验证必填字段
     if (!orderType || !customer || !items || !Array.isArray(items) || items.length === 0) {
@@ -52,6 +52,24 @@ export async function createSnapshot(req: Request, res: Response) {
       }
     }
 
+    // 耗材答复：quantity 可以是 0（明确不要），但必须带 supplyId
+    if (supplySelections !== undefined) {
+      if (!Array.isArray(supplySelections)) {
+        return res.status(400).json({
+          success: false,
+          error: 'supplySelections must be an array',
+        })
+      }
+      for (const sel of supplySelections) {
+        if (!sel?.supplyId || typeof sel.quantity !== 'number' || sel.quantity < 0) {
+          return res.status(400).json({
+            success: false,
+            error: 'Each supply selection must have supplyId and quantity >= 0',
+          })
+        }
+      }
+    }
+
     const result = await checkoutSnapshotService.createCheckoutSnapshot(merchantId, {
       orderType,
       consumerId,
@@ -70,6 +88,7 @@ export async function createSnapshot(req: Request, res: Response) {
       scheduledAt,
       salesChannelId,
       giftCardDeductionEstimate,
+      supplySelections,
     })
 
     if (!result.success) {
