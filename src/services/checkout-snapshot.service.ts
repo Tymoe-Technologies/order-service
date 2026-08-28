@@ -1,5 +1,12 @@
 import { PrismaClient } from '../../node_modules/.prisma/client-order'
 import axios from 'axios'
+import {
+  type TaxablePortion,
+  extractTaxRatesFromRelations,
+  extractTaxRatesFromItems,
+  buildItemTaxPortions,
+  calculateOrderTax,
+} from './tax-calculation'
 
 const prisma = new PrismaClient()
 
@@ -314,7 +321,7 @@ function calculateModifiersPrice(modifiers: any, itemModifierGroups: any): numbe
   return modifiersTotal
 }
 
-// 从验证后的商品数据中提取完整修饰符信息（用于创建关系记录）
+// 从验证后的商品数据中提取完整修饰符信息（用于创建关系记录 + 逐段计税）
 function extractVerifiedModifiers(
   modifiers: any,
   itemModifierGroups: any
@@ -326,6 +333,8 @@ function extractVerifiedModifiers(
   optionCode: string | undefined
   unitPrice: number
   quantity: number
+  /** 该选项自己的税率。空数组 = 没单独配，计税时回退到所属商品的税率 */
+  taxRates: Array<{ name: string; rate: number; isCompound: boolean }>
 }> {
   if (!modifiers || !itemModifierGroups) return []
 
@@ -337,6 +346,7 @@ function extractVerifiedModifiers(
     optionCode: string | undefined
     unitPrice: number
     quantity: number
+    taxRates: Array<{ name: string; rate: number; isCompound: boolean }>
   }> = []
 
   for (const [groupId, selectedOptions] of Object.entries(modifiers)) {
@@ -372,6 +382,7 @@ function extractVerifiedModifiers(
         optionCode,
         unitPrice: Math.round(price),
         quantity: 1,
+        taxRates: extractTaxRatesFromRelations(option.tax_rates),
       })
     }
   }
@@ -379,83 +390,6 @@ function extractVerifiedModifiers(
   return result
 }
 
-// 从商品数据中提取税率信息
-function extractTaxRatesFromItems(items: any[]): Array<{ name: string; rate: number; isCompound: boolean }> {
-  const taxRatesMap = new Map<string, { name: string; rate: number; isCompound: boolean }>()
-
-  for (const item of items) {
-    if (item.item_tax_rates && Array.isArray(item.item_tax_rates)) {
-      for (const itr of item.item_tax_rates) {
-        // item service 返回的关联字段名是 tax_rate（兼容旧字段名 tenant_tax_rates）
-        const tr = itr.tax_rate || itr.tenant_tax_rates
-        if (tr && tr.id) {
-          // 使用 id 作为唯一键，避免重复
-          taxRatesMap.set(tr.id, {
-            name: tr.name || 'Tax',
-            rate: Number(tr.rate) || 0,
-            isCompound: tr.is_compound || false,
-          })
-        }
-      }
-    }
-  }
-
-  return Array.from(taxRatesMap.values())
-}
-
-// 计算税费（支持非复合税和复合税）
-function calculateTax(subtotal: number, taxRates: Array<{ name: string; rate: number; isCompound: boolean }>): number {
-  // 没有配置税率则不计税
-  if (!taxRates || taxRates.length === 0) {
-    return 0
-  }
-
-  // 分离非复合税和复合税
-  const nonCompoundTaxes = taxRates.filter(t => !t.isCompound)
-  const compoundTaxes = taxRates.filter(t => t.isCompound)
-
-  // 计算非复合税
-  let taxAmount = 0
-  for (const tax of nonCompoundTaxes) {
-    taxAmount += Math.round(subtotal * tax.rate)
-  }
-
-  // 计算复合税（基础为 subtotal + 非复合税）
-  const baseForCompoundTax = subtotal + taxAmount
-  for (const tax of compoundTaxes) {
-    taxAmount += Math.round(baseForCompoundTax * tax.rate)
-  }
-
-  console.log('[CheckoutSnapshot] Tax calculation:', { subtotal, nonCompoundTaxes: nonCompoundTaxes.length, compoundTaxes: compoundTaxes.length, taxAmount })
-  return taxAmount
-}
-
-interface ComboAllocationPart {
-  weight: number  // 分摊权重（子项商品单卖标价 × 数量，选中的可选项再加上additionalPrice对应的"虚拟权重"）
-  taxRates: Array<{ name: string; rate: number; isCompound: boolean }>
-}
-
-/**
- * 套餐分摊计税：套餐本身没有税率，按子项商品的标价权重把这一行的应税金额(taxableBase，
- * 已经扣完折扣分摊)按比例分给各子项，再用子项各自的税率算税、加总。
- * 跟 POS 前端 taxCalculation.ts 的套餐分摊算法是同一个思路，这里是后端权威计算。
- */
-function calculateComboTax(taxableBase: number, parts: ComboAllocationPart[]): number {
-  const totalWeight = parts.reduce((s, p) => s + p.weight, 0)
-  if (totalWeight <= 0 || parts.length === 0) return 0
-
-  let tax = 0
-  let allocated = 0
-  parts.forEach((part, idx) => {
-    // 末项吃分摊余数，避免四舍五入误差累积/丢失
-    const partBase = idx === parts.length - 1
-      ? taxableBase - allocated
-      : Math.round(taxableBase * part.weight / totalWeight)
-    allocated += partBase
-    tax += calculateTax(partBase, part.taxRates)
-  })
-  return tax
-}
 
 /**
  * 创建结账快照（后端验证价格）
@@ -544,7 +478,7 @@ export async function createCheckoutSnapshot(
 
         // 按子项商品的单卖标价(× quantity)做权重分摊计税，子项各自税率不同也能算对
         // （跟 POS 前端 taxCalculation.ts 的套餐分摊算法是同一个思路）
-        const comboAllocation: ComboAllocationPart[] = chosenComboItems.map((ci: any) => {
+        const comboAllocation: TaxablePortion[] = chosenComboItems.map((ci: any) => {
           const childItem = itemPrices.find((p: any) => p.id === ci.item?.id)
           const childBasePrice = childItem ? (parseInt(String(childItem.base_price), 10) || 0) : 0
           return {
@@ -616,6 +550,11 @@ export async function createCheckoutSnapshot(
         itemTotalPrice: realUnitPrice * item.quantity
       })
 
+      // 该商品自身的税率（逐行计税用，不与其他商品的税率混合）
+      const itemTaxRates = extractTaxRatesFromItems([realItem])
+      // 完整的修饰符信息（用于创建 OrderItemModifier 关系记录 + 逐段计税）
+      const verifiedModifiers = extractVerifiedModifiers(modifierData, realItem.item_modifier_groups)
+
       return {
         itemId,
         itemName: realItem.name,
@@ -624,10 +563,10 @@ export async function createCheckoutSnapshot(
         basePrice,        // 分，不含 modifier，FREE_ITEM 折扣只免这部分
         unitPrice: realUnitPrice,  // 分
         modifiers: item.modifiers,
-        // 该商品自身的税率（逐行计税用，不与其他商品的税率混合）
-        taxRates: extractTaxRatesFromItems([realItem]),
-        // 完整的修饰符信息（用于创建 OrderItemModifier 关系记录）
-        verifiedModifiers: extractVerifiedModifiers(modifierData, realItem.item_modifier_groups),
+        taxRates: itemTaxRates,
+        verifiedModifiers,
+        // 计税分段：商品基础价一段 + 每个选项一段，选项没配税率则回退商品税率
+        taxPortions: buildItemTaxPortions(basePrice, item.quantity, verifiedModifiers, itemTaxRates),
       }
     })
 
@@ -679,24 +618,23 @@ export async function createCheckoutSnapshot(
     const discountedSubtotal = subtotal - discountAmount - channelDiscountAmount
 
     // 4. 逐行计税：每行按该商品自身税率计税（税率并集乘整单会对不该征税的商品征税），
-    //    折扣按各行小计占比分摊到行后再计税，Σ行折扣 = 总折扣（末行吃余数）
+    //    折扣按各行小计占比分摊到行后再计税，Σ行折扣 = 总折扣（末行吃余数）。
+    //    行内再分段：商品基础价一段、每个收费选项一段，选项可以有自己的税率
+    //    （免税饮品 + 收税配料这种组合，整行套商品税率会漏收配料的税）。
     const totalDiscount = discountAmount + channelDiscountAmount
-    let taxAmount = 0  // 分
-    if (subtotal > 0 && verifiedItems.length > 0) {
-      let allocatedDiscount = 0
-      verifiedItems.forEach((vi, idx) => {
+    const taxAmount = calculateOrderTax(  // 分
+      verifiedItems.map(vi => {
         const lineSubtotal = vi.unitPrice * vi.quantity
-        const lineDiscount = idx === verifiedItems.length - 1
-          ? totalDiscount - allocatedDiscount
-          : Math.round(totalDiscount * lineSubtotal / subtotal)
-        allocatedDiscount += lineDiscount
-        const taxableBase = Math.max(0, lineSubtotal - lineDiscount)
-        // 套餐行没有自己的税率，按子项商品标价权重再分摊一层算税；普通商品行走原来的单税率逻辑
-        taxAmount += (vi as any).comboAllocation
-          ? calculateComboTax(taxableBase, (vi as any).comboAllocation)
-          : calculateTax(taxableBase, vi.taxRates)
-      })
-    }
+        // 套餐行按子项标价权重分摊，普通商品行按「基础价 + 各选项」分段；
+        // 两者都没有时退化成整行一段（用商品自身税率），与改造前等价
+        const portions: TaxablePortion[] =
+          (vi as any).comboAllocation ??
+          (vi as any).taxPortions ??
+          [{ weight: lineSubtotal, taxRates: vi.taxRates }]
+        return { lineSubtotal, portions }
+      }),
+      totalDiscount
+    )
     console.log('[CheckoutSnapshot] Per-line tax total:', taxAmount)
 
     // 5. 小费由用户决定，直接使用

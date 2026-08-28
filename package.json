@@ -7,6 +7,7 @@
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
+    "test": "node --import tsx --test src/**/*.test.ts",
     "prisma:generate": "prisma generate --schema=./shared/database/schema-order.prisma",
     "prisma:migrate": "prisma migrate dev --schema=./shared/database/schema-order.prisma",
     "prisma:studio": "prisma studio --schema=./shared/database/schema-order.prisma"
@@ -62,6 +63,7 @@
     "@types/ws": "^8.18.1",
     "prisma": "^5.7.1",
     "ts-node-dev": "^2.0.0",
+    "tsx": "^4.23.12",
     "typescript": "^5.3.3"
   }
 }
