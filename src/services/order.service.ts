@@ -2009,6 +2009,12 @@ class OrderService {
                   unitPrice: parseInt(item.unitPrice, 10),
                   totalPrice: parseInt(item.unitPrice, 10) * item.quantity,
                   modifiers: null,  // 不再写 JSON，改用关系表
+                  // 耗材行（餐具/袋子/打包费）：itemId 存的是 catalog_supplies.id，
+                  // supplyOrigin 区分系统自动加的和顾客自己选的
+                  ...(item.isSupply && {
+                    lineKind: 'SUPPLY' as const,
+                    supplyOrigin: item.supplyOrigin ?? null,
+                  }),
                   // 套餐行：comboId 标记这行是套餐，comboSelections 快照当时选中的子项（供收据/厨房显示）
                   ...(item.isCombo && {
                     comboId: item.comboId,
