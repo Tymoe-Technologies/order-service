@@ -10,7 +10,7 @@ interface OrderMessage {
   type: string;
   payload: {
     orderId?: string;
-    orderType?: 'DINE_IN' | 'TAKEOUT' | 'DELIVERY';
+    orderType?: 'DINE_IN' | 'TAKEOUT' | 'DELIVERY' | 'CURBSIDE' | 'DRIVE_THRU';
     clientOrigin?: 'POS' | 'WEB' | 'KIOSK';
     tableNumber?: string;
     customerName?: string;
@@ -106,7 +106,7 @@ export class MQConsumerService {
       // 调用订单服务创建订单，并传递 messageId 用于幂等性
       const orderData = {
         ...message.payload,
-        orderType: finalOrderType as 'DINE_IN' | 'TAKEOUT' | 'DELIVERY',
+        orderType: finalOrderType as 'DINE_IN' | 'TAKEOUT' | 'DELIVERY' | 'CURBSIDE' | 'DRIVE_THRU',
       };
 
       const result = await orderService.createOrder(
