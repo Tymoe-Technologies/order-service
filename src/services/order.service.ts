@@ -405,7 +405,9 @@ class OrderService {
   async generatePickupNumber(tenantId: string, clientOrigin: string, forDate?: Date): Promise<{ pickupNumber: number; pickupDisplay: string }> {
     const config = await pickupNumberConfigService.getConfig(tenantId);
     const pickupNumber = await pickupNumberConfigService.nextPickupNumber(tenantId, config.startAt, forDate);
-    const pickupDisplay = pickupNumberConfigService.formatPickupDisplay(pickupNumber, clientOrigin, config.showPrefix);
+    const pickupDisplay = pickupNumberConfigService.formatPickupDisplay(
+      pickupNumber, clientOrigin, config.showPrefix, config.channelPrefixes,
+    );
     return { pickupNumber, pickupDisplay };
   }
 
