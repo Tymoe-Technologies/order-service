@@ -32,8 +32,20 @@ model Order {
   taxAmount      Int           @default(0) @map("tax_amount")
   discountAmount Int           @default(0) @map("discount_amount")
   serviceFee     Int           @default(0) @map("service_fee")
-  deliveryFee    Int           @default(0) @map("delivery_fee")         // 向顾客收取的配送费（分）
+  deliveryFee    Int           @default(0) @map("delivery_fee")         // 向顾客收取的配送费（分，已扣商家补贴）
+
+  // 向顾客收取的配送费税额（分）—— 销项税，商家要申报上缴。
+  // Uber Direct 是白标：顾客在商家自有渠道下单、钱进商家账户，商家是 Merchant of Record，
+  // 所以这笔税由商家收缴（Uber Eats 平台单才是平台代收代缴）。
+  // 税率跟随所配送的商品，按商品行金额加权分摊。
+  // 已包含在 taxAmount 里，单列一份是为了对账时能把销项拆开看。
+  deliveryFeeTax Int           @default(0) @map("delivery_fee_tax")
+
   uberDeliveryFee Int          @default(0) @map("uber_delivery_fee")  // Uber 实际配送成本（分）
+  // Uber 向商家收取的配送费里所含的税（分）—— 进项税，报税时可做 ITC 抵扣。
+  // ⚠️ 目前无法自动填充：Uber Direct 的报价接口只返回费用总额，不返回税额明细。
+  // 留给月度发票对账时回填。与上面的 deliveryFeeTax 是两笔不同的钱（销项 vs 进项）。
+  uberDeliveryFeeTax Int?      @map("uber_delivery_fee_tax")
   platformFee    Int           @default(0) @map("platform_fee")
   tipAmount      Int           @default(0) @map("tip_amount")
   totalAmount    Int           @map("total_amount")

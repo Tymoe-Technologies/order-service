@@ -7,6 +7,7 @@ import {
   extractTaxRatesFromItems,
   buildItemTaxPortions,
   calculateOrderTax,
+  calculateAllocatedTax,
 } from './tax-calculation'
 
 const prisma = new PrismaClient()
@@ -130,6 +131,8 @@ interface SnapshotPricing {
   tipAmount: number
   platformFee: number
   deliveryFee: number
+  /** 向顾客收取的配送费税额（分）。已含在 taxAmount 内，单列供对账拆分销项 */
+  deliveryFeeTax?: number
   uberDeliveryFee?: number        // Uber 实际报价的配送费（成本）
   discountAmount?: number         // 积分奖励折扣（分）
   channelDiscountAmount?: number  // 渠道折扣（分）
@@ -768,15 +771,41 @@ export async function createCheckoutSnapshot(
       0
     )
 
-    const taxAmount = productTax + supplyTax
-    console.log('[CheckoutSnapshot] Per-line tax total:', taxAmount, '(商品', productTax, '耗材', supplyTax, ')')
+    // 配送费。定义提前到计税之前——下面算配送费税要用它
+    const deliveryFee = data.deliveryFee || 0          // 向顾客收取的配送费（分，已扣商家补贴）
+    const uberDeliveryFee = data.uberDeliveryFee || 0  // Uber 实际报价的成本（分）
+
+    /*
+      配送费的税。Uber Direct 是白标派送——顾客在商家自有渠道下单、钱进商家账户，
+      商家是 Merchant of Record，所以这笔税由商家收缴（Uber Eats 平台单才是平台代收）。
+
+      税率跟随所配送的商品，按各商品行金额加权分摊：一单里既有 5% GST 的餐食
+      又有 12% 的酒时，配送费按金额比例拆开分别计税，而不是整单套一个税率。
+      这正好是 calculateAllocatedTax 的用途，不用新写算法。
+
+      计税基数用 deliveryFee 而不是 uberDeliveryFee：前者已经扣掉商家补贴
+      （MERCHANT_SUBSIDY 规则下 customerFee = max(0, 报价 - 补贴)），
+      只有顾客自掏腰包的那部分才向顾客收税。满额免运时 deliveryFee = 0，税也是 0。
+
+      分摊权重只取商品行，不含耗材：袋子、打包盒是附属包装，不是被配送的标的物。
+    */
+    const deliveryFeeTax = deliveryFee > 0
+      ? calculateAllocatedTax(
+          deliveryFee,
+          verifiedItems.map(vi => ({
+            weight: vi.unitPrice * vi.quantity,
+            taxRates: vi.taxRates ?? [],
+          })),
+        )
+      : 0
+
+    const taxAmount = productTax + supplyTax + deliveryFeeTax
+    console.log('[CheckoutSnapshot] Per-line tax total:', taxAmount,
+      '(商品', productTax, '耗材', supplyTax, '配送费', deliveryFeeTax, ')')
 
     // 5. 小费由用户决定，直接使用
     const tipAmount = data.tipAmount || 0
 
-    // 5.5 配送费
-    const deliveryFee = data.deliveryFee || 0          // 向顾客收取的配送费（分）
-    const uberDeliveryFee = data.uberDeliveryFee || 0  // Uber 实际报价的成本（分）
 
     // 6. 基础订单金额（不含 platformFee）。耗材不打折，所以是折后商品 + 耗材原价
     const baseTotal = discountedSubtotal + supplySubtotal + taxAmount + tipAmount + deliveryFee
@@ -817,6 +846,7 @@ export async function createCheckoutSnapshot(
           tipAmount,
           platformFee,
           deliveryFee,
+          deliveryFeeTax,
           discountAmount,
           grantedRewardId: data.grantedRewardId,
           total,
@@ -865,6 +895,7 @@ export async function createCheckoutSnapshot(
           tipAmount,
           platformFee,
           deliveryFee,
+          deliveryFeeTax,
           uberDeliveryFee,
           deliveryQuoteId: data.deliveryQuoteId || undefined,
           discountAmount,
@@ -892,6 +923,7 @@ export async function createCheckoutSnapshot(
       tipAmount: (data.tipAmount || 0) / 100,
       platformFee: platformFee / 100,
       deliveryFee: deliveryFee / 100,
+      deliveryFeeTax: deliveryFeeTax / 100,
       uberDeliveryFee: uberDeliveryFee / 100,
       discountAmount: discountAmount / 100,
       channelDiscountAmount: channelDiscountAmount / 100,
