@@ -107,6 +107,10 @@ export class PrintService {
         if (order.tableNumber) {
           doc.text(`桌号: ${order.tableNumber}`);
         }
+        const vehicleLine = this.formatVehicleInfo((order as any).vehicleInfo);
+        if (vehicleLine) {
+          doc.text(`车辆: ${vehicleLine}`);
+        }
         if (order.customerName) {
           doc.text(`客户姓名: ${order.customerName}`);
         }
@@ -160,8 +164,27 @@ export class PrintService {
       DINE_IN: '堂食',
       TAKEOUT: '外带',
       DELIVERY: '配送',
+      CURBSIDE: '路边取餐',
     };
+    // 兜底返回原始值：漏映射时小票上会出现英文枚举名，虽然难看但不至于空白
     return map[type] || type;
+  }
+
+  /**
+   * 车辆信息一行（路边取餐）。店员就是拿着这张小票去停车场找车的，
+   * 没有它顾客填的车牌等于白填。
+   * 顺序按店员的动线：先看去哪个车位，再核对颜色车型车牌。
+   */
+  private formatVehicleInfo(vehicleInfo: any): string | null {
+    if (!vehicleInfo || typeof vehicleInfo !== 'object') return null;
+    const parts = [
+      vehicleInfo.spot ? `车位${vehicleInfo.spot}` : null,
+      vehicleInfo.color,
+      vehicleInfo.make,
+      vehicleInfo.model,
+      vehicleInfo.plate,
+    ].filter(Boolean);
+    return parts.length > 0 ? parts.join(' · ') : null;
   }
 }
 
