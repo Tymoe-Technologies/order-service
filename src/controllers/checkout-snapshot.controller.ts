@@ -20,7 +20,7 @@ export async function createSnapshot(req: Request, res: Response) {
       })
     }
 
-    const { orderType, customer, items, tipAmount, notes, expectedTotal, customLabelData, deliveryAddress, consumerId, grantedRewardId, deliveryFee, uberDeliveryFee, deliveryQuoteId, isScheduled, scheduledAt, salesChannelId, giftCardDeductionEstimate, supplySelections } = req.body
+    const { orderType, customer, items, tipAmount, notes, expectedTotal, customLabelData, deliveryAddress, consumerId, grantedRewardId, deliveryFee, uberDeliveryFee, deliveryQuoteId, isScheduled, scheduledAt, salesChannelId, giftCardDeductionEstimate, supplySelections, vehicleInfo } = req.body
 
     // 验证必填字段
     if (!orderType || !customer || !items || !Array.isArray(items) || items.length === 0) {
@@ -51,6 +51,21 @@ export async function createSnapshot(req: Request, res: Response) {
         return res.status(400).json({
           success: false,
           error: 'Each item must have itemId or comboId, and quantity >= 1',
+        })
+      }
+    }
+
+    // 路边取餐至少要留一个能认出车的信息，否则店员出去找不到人。
+    // 不强制具体是哪个字段——有的商家只要车牌，有的看车型颜色
+    if (orderType === 'CURBSIDE') {
+      const v = vehicleInfo
+      const hasAny = v && typeof v === 'object' &&
+        [v.make, v.model, v.color, v.plate, v.spot].some((x: any) => typeof x === 'string' && x.trim())
+      if (!hasAny) {
+        return res.status(400).json({
+          success: false,
+          error: 'VEHICLE_INFO_REQUIRED',
+          message: 'Curbside orders require vehicle information so staff can find you',
         })
       }
     }
@@ -92,6 +107,10 @@ export async function createSnapshot(req: Request, res: Response) {
       salesChannelId,
       giftCardDeductionEstimate,
       supplySelections,
+      // 路边取餐的车辆信息。这里漏过一次：前端传了、service 会存、建单会搬，
+      // 唯独 controller 的解构没列它，于是一路走到底都是 null，
+      // 店员在小票和订单页上什么都看不到
+      vehicleInfo,
     })
 
     if (!result.success) {
