@@ -1,5 +1,6 @@
 import prisma from '../utils/prisma';
 import { pickupNumberConfigService } from './print-setting.service';
+import { IN_STORE_PICKUP_TYPES } from './fulfillment-option.service';
 import { AppError } from '../middleware/errorHandler';
 import { runWithIdempotency, fingerprintOf } from './idempotency.service';
 import { toE164 } from '../utils/phone';
@@ -1399,7 +1400,8 @@ class OrderService {
    * 自动完成超时的待取餐（READY）自取单
    * 叫号取餐场景：订单 READY 超过 graceMinutes 分钟（默认 5）仍未被店员标记完成的，
    * 自动标记 COMPLETED，避免订单永久卡在 READY。
-   * 仅针对自取/堂食单（配送单 READY 要等骑手取，不能自动完成）。
+   * 仅针对顾客在店内等餐的单。配送单 READY 要等骑手取；路边取餐的顾客
+   * 可能还在开过来的路上，自动完成会变成「系统显示已完成、餐还没送出去」。
    */
   async autoCompleteOverdueReady(graceMinutes = 5): Promise<number> {
     const threshold = new Date(Date.now() - graceMinutes * 60 * 1000);
@@ -1408,7 +1410,8 @@ class OrderService {
       where: {
         status: 'READY',
         readyAt: { lte: threshold },
-        orderType: { not: 'DELIVERY' },
+        // 白名单：新履约方式不会默认获得「超时自动完成」这个行为
+        orderType: { in: [...IN_STORE_PICKUP_TYPES] },
         orderSource: { not: 'UBER_EATS' },
       },
     });

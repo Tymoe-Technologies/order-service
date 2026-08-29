@@ -7,6 +7,7 @@
  */
 
 import { WebSocketServer, WebSocket } from 'ws';
+import { IN_STORE_PICKUP_TYPES, isInStorePickup } from '../services/fulfillment-option.service';
 import { Server, IncomingMessage } from 'http';
 import logger from '../utils/logger';
 import prisma from '../utils/prisma';
@@ -137,8 +138,10 @@ async function sendActiveOrders(ws: WebSocket, tenantId: string): Promise<void> 
         tenantId,
         status: { in: ['CONFIRMED', 'PREPARING', 'READY'] },
         createdAt: { gte: windowStart },
-        // 只显示堂食/自取单，排除配送单和外卖平台单（由骑手取，不进叫号屏）
-        orderType: { not: 'DELIVERY' },
+        // 只显示顾客在店内等餐的单。用白名单而不是「排除 DELIVERY」：
+        // 黑名单模式下新加的履约方式会默认混进叫号屏 —— 路边取餐就这么错进来过，
+        // 而那些顾客坐在车里，根本看不到这块屏幕
+        orderType: { in: [...IN_STORE_PICKUP_TYPES] },
         orderSource: { not: 'UBER_EATS' },
       },
       select: {
@@ -171,8 +174,9 @@ export function broadcastOrderUpdate(tenantId: string, order: any): void {
   const clients = displayClients.get(tenantId);
   if (!clients || clients.length === 0) return;
 
-  // 配送单 / 外卖平台单不进叫号屏（由骑手取）
-  if (order.orderType === 'DELIVERY' || order.orderSource === 'UBER_EATS') return;
+  // 与上面的查询同一套口径：只有店内等餐的单才推给叫号屏。
+  // 路边取餐的顾客在车里，配送的顾客压根不在店里，推给他们看不到的屏幕没有意义
+  if (!isInStorePickup(order.orderType) || order.orderSource === 'UBER_EATS') return;
 
   const message = JSON.stringify({
     type: 'order:update',
