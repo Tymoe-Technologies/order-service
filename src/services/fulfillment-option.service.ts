@@ -1,7 +1,7 @@
 /**
  * 门店履约方式配置
  *
- * 「这单东西怎么交到顾客手上」：堂食、外带、配送、路边取餐、车道取餐。
+ * 「这单东西怎么交到顾客手上」：堂食、外带、配送、路边取餐。
  * 商家按门店逐个启用，顾客端只显示启用了的。
  *
  * 为什么不是 MerchantOnlineOrderConfig 上的布尔列：那套结构每加一种方式就要
@@ -23,8 +23,21 @@ export const FULFILLMENT_TYPES = [
   OrderType.TAKEOUT,
   OrderType.DELIVERY,
   OrderType.CURBSIDE,
-  OrderType.DRIVE_THRU,
 ] as const;
+
+/*
+  DRIVE_THRU 刻意不在这个列表里。
+
+  枚举值和数据库列保留（删枚举值要重建类型，代价远大于收益），但不对外暴露：
+  Portal 配不了、顾客端选不到、下单校验会拒。
+
+  砍它的原因是它没有任何可编程的差异化行为——和外带的区别仅仅是取货窗口不同，
+  下单链路、状态流转、通知、小票全都一样。留着就是给商家一个开了也没用的开关。
+  而且真正的车道点单是顾客开到对讲机前现场点，根本不经过在线点单。
+
+  以后要放开：把 OrderType.DRIVE_THRU 加回这个数组，同步 item-management 的
+  SUPPLY_ORDER_TYPES 和 Portal 的 FULFILLMENT_TYPES，并先想清楚它比外带多做什么。
+*/
 
 export type FulfillmentType = (typeof FULFILLMENT_TYPES)[number];
 
@@ -37,15 +50,14 @@ export function isFulfillmentType(v: string): v is FulfillmentType {
  *
  * 三种老方式默认开：它们本来就是 MerchantOnlineOrderConfig 的默认 true，
  * 突然关掉等于让现有商家的顾客端少几个选项。
- * 两种新方式默认关：商家没主动开就不该出现——路边取餐要有人跑出去送，
- * 默认打开会让不具备条件的门店收到没法履约的订单。
+ * 路边取餐默认关：要有人跑出去送，默认打开会让不具备条件的门店
+ * 收到没法履约的订单。
  */
 const DEFAULT_ENABLED: Record<FulfillmentType, boolean> = {
   [OrderType.DINE_IN]: true,
   [OrderType.TAKEOUT]: true,
   [OrderType.DELIVERY]: true,
   [OrderType.CURBSIDE]: false,
-  [OrderType.DRIVE_THRU]: false,
 };
 
 const DEFAULT_ORDER: Record<FulfillmentType, number> = {
@@ -53,7 +65,6 @@ const DEFAULT_ORDER: Record<FulfillmentType, number> = {
   [OrderType.DINE_IN]: 1,
   [OrderType.DELIVERY]: 2,
   [OrderType.CURBSIDE]: 3,
-  [OrderType.DRIVE_THRU]: 4,
 };
 
 export interface FulfillmentOptionDto {
