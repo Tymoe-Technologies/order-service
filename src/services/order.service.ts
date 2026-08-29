@@ -1986,6 +1986,8 @@ class OrderService {
             notes: snapshot.notes || undefined,
             customLabelData: (snapshot as any).customLabelData ?? undefined,
             deliveryAddress: (snapshot as any).deliveryAddress ?? undefined,
+            // CURBSIDE 的车辆信息：店员靠它认车，必须跟着订单走到门店
+            vehicleInfo: (snapshot as any).vehicleInfo ?? undefined,
             orderSource: 'WEB',
             createdBy: SYSTEM_USER_ID,
             // 不设置 paymentIntentId，因为还没支付

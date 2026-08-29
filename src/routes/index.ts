@@ -7,6 +7,8 @@ import statisticsRoutes from './statistics.routes';
 import salesChannelRoutes from './sales-channel.routes';
 import syncRoutes from './sync.routes';
 import merchantConfigRoutes from './merchant-config.routes';
+import fulfillmentOptionRoutes from './fulfillment-option.routes';
+import { markCustomerArrived } from '../controllers/curbside.controller';
 import itemProxyRoutes from './item-proxy.routes';
 import checkoutSnapshotRoutes from './checkout-snapshot.routes';
 import printSettingRoutes from './print-setting.routes';
@@ -33,6 +35,8 @@ router.use('/statistics', statisticsRoutes);
 router.use('/sales-channels', salesChannelRoutes);
 router.use('/sync', syncRoutes);
 router.use('/', merchantConfigRoutes);
+// 履约方式配置（管理端 + /public 顾客端），与 merchantConfig 同前缀
+router.use('/', fulfillmentOptionRoutes);
 router.use('/', itemProxyRoutes);
 router.use('/print-settings', printSettingRoutes);
 router.use('/print-brand', printBrandRoutes);
@@ -70,6 +74,8 @@ router.get('/web/orders/:orderId', orderController.getOrderById);
 router.post('/web/create-from-snapshot', orderController.createTemporaryOrder);
 router.post('/web/confirm-free-order', orderController.confirmFreeOrder);
 router.post('/web/confirm-account-order', orderController.confirmAccountOrder);
+// 路边取餐「我到了」：点这个按钮的是顾客，所以和同前缀的其它 /web 接口一样无需认证
+router.post('/web/orders/:orderId/arrived', markCustomerArrived);
 // /web/create-verified 已废弃，Web 端统一走 create-from-snapshot + confirm-free-order/Stripe webhook
 
 // 内部服务接口已迁移到 src/routes/internal.ts（挂载在 /internal，无需 merchantId）
