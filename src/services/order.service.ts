@@ -1973,6 +1973,8 @@ class OrderService {
             subtotal: pricing.subtotal,
             taxAmount: pricing.taxAmount,
             deliveryFee: pricing.deliveryFee || 0,
+            // 销项：向顾客收的配送费税（已含在 taxAmount 内，这里单存一份供对账拆分）
+            deliveryFeeTax: pricing.deliveryFeeTax || 0,
             uberDeliveryFee: pricing.uberDeliveryFee || 0,
             platformFee: pricing.platformFee,
             tipAmount: pricing.tipAmount,
