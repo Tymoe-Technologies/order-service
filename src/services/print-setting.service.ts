@@ -529,12 +529,17 @@ export class PickupNumberConfigService {
 
   /**
    * 格式化取餐号显示，优先用自定义前缀，其次用内置默认值
+   *
+   * ⚠️ channelPrefixes **必传**，不给默认值是故意的：
+   * 之前它默认 `{}`，order.service 建单时漏传编译器不报错，
+   * 结果小票走内置默认前缀、叫号屏走商家自定义前缀，同一单两个号。
+   * 调用方一律传 `getConfig()` 拿到的 config.channelPrefixes。
    */
   formatPickupDisplay(
     pickupNumber: number,
     orderSource: string,
     showPrefix: boolean,
-    channelPrefixes: Record<string, string> = {},
+    channelPrefixes: Record<string, string>,
   ): string {
     if (!showPrefix) return String(pickupNumber);
     const prefix = channelPrefixes[orderSource] ?? DEFAULT_CHANNEL_PREFIX[orderSource] ?? '';
