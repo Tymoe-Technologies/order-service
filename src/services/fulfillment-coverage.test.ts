@@ -69,13 +69,24 @@ describe('履约方式没有被硬编码成不完整的子集', () => {
 })
 
 describe('FULFILLMENT_TYPES 与数据库枚举一致', () => {
-  test('五种履约方式齐全，且不含 GIFT_CARD', () => {
+  test('对外暴露四种履约方式', () => {
     assert.deepEqual(
       [...FULFILLMENT_TYPES].sort(),
-      ['CURBSIDE', 'DELIVERY', 'DINE_IN', 'DRIVE_THRU', 'TAKEOUT'],
+      ['CURBSIDE', 'DELIVERY', 'DINE_IN', 'TAKEOUT'],
     )
-    assert.ok(!(FULFILLMENT_TYPES as readonly string[]).includes('GIFT_CARD'),
-      'GIFT_CARD 是订单性质不是履约方式，不该出现在门店配置里')
+  })
+
+  test('GIFT_CARD 不是履约方式，不该出现在门店配置里', () => {
+    assert.ok(!(FULFILLMENT_TYPES as readonly string[]).includes('GIFT_CARD'))
+  })
+
+  test('DRIVE_THRU 枚举值保留但不暴露', () => {
+    // 数据库枚举留着（删枚举值要重建类型），但不给商家配、顾客选不到、下单会拒。
+    // 它和外带没有任何可编程的差异，留着只是个开了也没用的开关。
+    assert.ok(!(FULFILLMENT_TYPES as readonly string[]).includes('DRIVE_THRU'))
+
+    const schema = readFileSync(join(SRC, '../shared/database/schema-order.prisma'), 'utf8')
+    assert.ok(/DRIVE_THRU/.test(schema), '枚举值应保留在 schema 里，以免存量数据失效')
   })
 
   test('schema 里的 OrderType 枚举包含全部履约方式', () => {
