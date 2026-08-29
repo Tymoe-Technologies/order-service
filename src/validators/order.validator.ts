@@ -1,7 +1,9 @@
 import Joi from 'joi';
 
 export const createOrderSchema = Joi.object({
-  orderType: Joi.string().valid('DINE_IN', 'TAKEOUT', 'DELIVERY').required(),
+  // 五种履约方式都要放行。少列一种的后果是那种单直接被拒——
+  // CURBSIDE/DRIVE_THRU 加进枚举后这里漏改过一次，顾客选了路边取餐提交就 400
+  orderType: Joi.string().valid('DINE_IN', 'TAKEOUT', 'DELIVERY', 'CURBSIDE', 'DRIVE_THRU').required(),
   clientOrigin: Joi.string().valid('POS', 'WEB', 'KIOSK').default('POS'),
   tableNumber: Joi.string().max(50).optional().allow(null),
   // 离线补传：小票上没有取餐号，别补发一个（见 order.service 里那段说明）

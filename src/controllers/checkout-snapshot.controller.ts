@@ -1,5 +1,8 @@
 import { Request, Response } from 'express'
 import * as checkoutSnapshotService from '../services/checkout-snapshot.service'
+// 用共享常量而不是就地写字面量：加履约方式时只改一处，不会再出现
+// 「枚举加了但校验白名单没加，那种单直接被拒」
+import { FULFILLMENT_TYPES } from '../services/fulfillment-option.service'
 
 /**
  * 创建结账快照
@@ -35,10 +38,10 @@ export async function createSnapshot(req: Request, res: Response) {
     }
 
     // 验证 orderType
-    if (!['TAKEOUT', 'DINE_IN', 'DELIVERY'].includes(orderType)) {
+    if (!FULFILLMENT_TYPES.includes(orderType)) {
       return res.status(400).json({
         success: false,
-        error: 'Invalid orderType. Must be TAKEOUT, DINE_IN, or DELIVERY',
+        error: `Invalid orderType. Must be one of: ${FULFILLMENT_TYPES.join(', ')}`,
       })
     }
 

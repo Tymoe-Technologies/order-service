@@ -131,7 +131,7 @@ interface CreateOrderItem {
 }
 
 interface CreateOrderData {
-  orderType: 'DINE_IN' | 'TAKEOUT' | 'DELIVERY';
+  orderType: 'DINE_IN' | 'TAKEOUT' | 'DELIVERY' | 'CURBSIDE' | 'DRIVE_THRU';
   clientOrigin?: 'POS' | 'WEB' | 'KIOSK';
   tableNumber?: string;
   customerName?: string;
