@@ -69,6 +69,11 @@ model Order {
   notes          String?
   customLabelData Json?  @map("custom_label_data") @db.Json  // 顾客自定义标签数据（WEB 订单）
   deliveryAddress Json?  @map("delivery_address") @db.Json   // 配送地址（DELIVERY 类型时）
+
+  // CURBSIDE 专用：车辆信息（店员靠它认车）+ 顾客点「我到了」的时间
+  // { make, model, color, plate, spot } —— 各商家要求的字段不一样，用 JSON 不固化
+  vehicleInfo     Json?     @map("vehicle_info") @db.Json
+  arrivedAt       DateTime? @map("arrived_at")
   deliveryConfirmedAt DateTime? @map("delivery_confirmed_at")  // POS 确认备餐时间并创建 Uber 配送单的时间（null = 待确认）
   deliveryConfirmedBy String? @map("delivery_confirmed_by") @db.VarChar(20) // 'MANUAL' | 'AUTO'，谁触发的确认
   deliveryPrepMinutes Int? @map("delivery_prep_minutes")       // 备餐时间（分钟），人工选择或系统默认值
@@ -363,11 +368,20 @@ enum DeliveryPlatform {
   OTHER_PLATFORM   // 其他外卖平台
 }
 
+// 履约方式。除 GIFT_CARD 外都是「这单东西怎么交到顾客手上」，
+// 商家在 MerchantFulfillmentOption 里按门店逐个启用。
+//
+// 新增类型时注意：现有业务判断（叫号屏、自动接单、Uber 配送、配送确认）
+// 全部写成「是不是 DELIVERY」，所以任何非配送的新类型会自动获得自取类行为
+// （进叫号队列、可自动接单、不走 Uber）—— 这对 CURBSIDE/DRIVE_THRU 正好是对的。
+// 要加的是「配送类」新方式（比如第三方跑腿），必须回头审查那几处判断。
 enum OrderType {
   DINE_IN
   TAKEOUT
   DELIVERY
-  GIFT_CARD  // 礼品卡购买订单
+  CURBSIDE     // 路边取餐：顾客到店在车里等，店员送出去
+  DRIVE_THRU   // 车道取餐
+  GIFT_CARD    // 礼品卡购买订单（不是履约方式，不出现在门店配置里）
 }
 
 // 订单行类型：区分卖的是商品还是耗材（餐具/购物袋/打包费）
@@ -389,6 +403,7 @@ enum OrderStatus {
   CONFIRMED            // 已确认
   PREPARING            // 准备中/制作中
   READY                // 已完成/待取餐
+  CUSTOMER_ARRIVED     // 顾客已到店（CURBSIDE：顾客点了「我到了」，店员该送出去了）
   PICKED_UP            // 已取餐（KIOSK/自取订单）
   OUT_FOR_DELIVERY     // 配送中（外卖订单）
   DELIVERED            // 已送达（外卖订单）
@@ -623,7 +638,9 @@ model MerchantOnlineOrderConfig {
   parentMerchantId String?  @map("parent_merchant_id") @db.Uuid // 主店ID（同步自 auth-service.Organization.parentOrgId）
   enabled          Boolean  @default(true)
 
-  // 订单类型配置
+  // ⚠️ 已废弃：履约方式改由 MerchantFulfillmentOption 逐条管理。
+  // 每加一种方式就要加一列的结构撑不住扩展（curbside / drive-thru / 自提柜…）。
+  // 这三列暂时保留并与新表双写，等所有调用方切完再删。
   allowPickup      Boolean  @default(true) @map("allow_pickup")
   allowDineIn      Boolean  @default(true) @map("allow_dine_in")
   allowDelivery    Boolean  @default(true) @map("allow_delivery")
@@ -652,6 +669,34 @@ model MerchantOnlineOrderConfig {
   @@map("merchant_online_order_configs")
 }
 
+// 门店启用了哪些履约方式（替代 MerchantOnlineOrderConfig 的三个 allow* 布尔列）
+//
+// 一种方式一行：加 curbside / drive-thru / 自提柜只是插一行数据 + 枚举加个值，
+// 不用再改 schema、validator、DTO、前端类型这一整串。
+// GIFT_CARD 不是履约方式，不会出现在这张表里。
+//
+// config 里放该方式专属的设置，各方式互不相干，不值得为它们各开一列：
+//   CURBSIDE   { requireVehicleInfo: true, spotCount: 6, instructions: "..." }
+//   DRIVE_THRU { laneCount: 2 }
+//   DINE_IN    { requireTableNumber: true }
+//   DELIVERY   配送半径/配送费仍在 MerchantOnlineOrderConfig（历史字段，未搬）
+model MerchantFulfillmentOption {
+  id              String    @id @default(uuid()) @db.Uuid
+  merchantId      String    @map("merchant_id") @db.Uuid
+  fulfillmentType OrderType @map("fulfillment_type")
+  enabled         Boolean   @default(false)
+  // 顾客端选择器里的排列顺序
+  displayOrder    Int       @default(0) @map("display_order")
+  config          Json?     @db.Json
+
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  @@unique([merchantId, fulfillmentType])
+  @@index([merchantId, enabled])
+  @@map("merchant_fulfillment_options")
+}
+
 // 结账快照（用于支付前锁定订单信息）
 model CheckoutSnapshot {
   id              String   @id @default(uuid()) @db.Uuid
@@ -671,6 +716,7 @@ model CheckoutSnapshot {
   notes           String?   @db.Text
   customLabelData Json?     @map("custom_label_data") @db.Json  // 顾客自定义标签数据
   deliveryAddress Json?     @map("delivery_address") @db.Json   // 配送地址（DELIVERY 类型时）
+  vehicleInfo     Json?     @map("vehicle_info") @db.Json       // 车辆信息（CURBSIDE 类型时）
   scheduledAt     DateTime? @map("scheduled_at")                // 预约取餐时间（预约订单时有值）
 
   // 关联字段（支付成功后填入）

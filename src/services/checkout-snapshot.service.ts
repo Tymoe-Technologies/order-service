@@ -1,5 +1,6 @@
 import { PrismaClient } from '../../node_modules/.prisma/client-order'
 import axios from 'axios'
+import { isTypeAllowed } from './fulfillment-option.service'
 import {
   type TaxablePortion,
   extractTaxRatesFromRelations,
@@ -58,7 +59,15 @@ async function quoteConsumerPlatformFee(params: {
 }
 
 interface CreateSnapshotDto {
-  orderType: 'TAKEOUT' | 'DINE_IN' | 'DELIVERY'
+  orderType: 'TAKEOUT' | 'DINE_IN' | 'DELIVERY' | 'CURBSIDE' | 'DRIVE_THRU'
+  /** CURBSIDE 专用：店员靠这个认车。字段由商家配置决定要不要必填 */
+  vehicleInfo?: {
+    make?: string
+    model?: string
+    color?: string
+    plate?: string
+    spot?: string
+  }
   consumerId?: string  // 已登录用户的 Consumer UUID
   customer: {
     name: string
@@ -477,6 +486,17 @@ export async function createCheckoutSnapshot(
   pricing?: SnapshotPricing
 }> {
   try {
+    // 0.0 商家有没有开这种履约方式。前端只是不显示未启用的选项，挡不住直接打接口；
+    // 收下一单没法履约的 curbside，损失比拒掉大得多
+    const typeAllowed = await isTypeAllowed(merchantId, data.orderType)
+    if (!typeAllowed) {
+      return {
+        success: false,
+        error: 'FULFILLMENT_NOT_AVAILABLE',
+        message: `This store does not offer ${data.orderType} orders`,
+      }
+    }
+
     // 0. 提前查渠道配置（后续折扣计算和定价都需要）
     let channelConfig: any = null
     let channelCode: string | undefined
@@ -857,6 +877,8 @@ export async function createCheckoutSnapshot(
         notes: data.notes,
         customLabelData: data.customLabelData ?? undefined,
         deliveryAddress: data.deliveryAddress ?? undefined,
+        // CURBSIDE 的车辆信息随快照一起锁定，建单时原样搬进 Order
+        vehicleInfo: data.vehicleInfo ?? undefined,
         scheduledAt: (data.isScheduled && data.scheduledAt) ? new Date(data.scheduledAt) : undefined,
         expiresAt,
       },
