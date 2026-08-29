@@ -821,8 +821,25 @@ class OrderService {
               // 预约自取
               isScheduled: data.isScheduled || false,
               scheduledAt: data.isScheduled && data.scheduledAt ? new Date(data.scheduledAt) : null,
-              // 预约订单初始状态为 SCHEDULED，普通订单为 PENDING
-              status: data.isScheduled ? 'SCHEDULED' : 'PENDING',
+              /*
+                预约订单初始状态为 SCHEDULED，普通订单为 PENDING。
+
+                ★ 平台代收渠道（内置外卖 UBER_EATS / DOORDASH / ... 见 sales-channel.service）
+                是**手工记账入口** —— 我们还没接这些平台的 API，商家在 POS 上补录一笔
+                平台那边已经收完钱、也已经在做的单，只为留个记录和对账，店里不走备餐流程。
+
+                这类单建单即 PAID（见上面 isPlatformCollect），钱不经过我们的收单通道，
+                finance 里没有对应 payment，于是**永远等不到支付回调**；
+                而 PENDING → CONFIRMED/COMPLETED 的自动推进全寄生在那个回调里
+                （updatePaymentStatus），结果订单永远卡在「待确认」。所以这里直接落 COMPLETED。
+
+                注意挂账（checkoutMode=CREDIT_ACCOUNT）同样建单即 PAID，但它有独立的结算
+                接口会写 CONFIRMED，业务上也还要备餐，**不在此列**。
+              */
+              status: data.isScheduled
+                ? 'SCHEDULED'
+                : (isPlatformCollect ? 'COMPLETED' : 'PENDING'),
+              completedAt: (!data.isScheduled && isPlatformCollect) ? new Date() : null,
 
               notes: data.notes || null,
               createdBy: userId,
@@ -849,6 +866,41 @@ class OrderService {
             items: data.items,
             order: created,
           } as any);
+
+          /*
+            建单即完成的（平台代收记账单）要补一个 ORDER_COMPLETED。
+
+            和支付回调里那段是同一个坑：member.handler 的积分入账挂在
+            ORDER_COMPLETED 上，只发 ORDER_CREATED 的话这类单的会员积分永远不入账。
+            走 enqueueEvent 而不是 eventBus.emit —— 和订单同事务，投递交给 outbox relay，
+            比支付回调那边的同步 emit 更稳（见本文件上方「别在这里补一次 emit」那段注释）。
+          */
+          if (created.status === 'COMPLETED') {
+            // 会员券 ID 是用 'GrantedReward:<id>' 这种 reason 字符串带过来的（POS 同步流程不走 snapshot）
+            const dr = data.discountReason;
+            const grantedRewardId = dr && dr.startsWith('GrantedReward:')
+              ? dr.slice('GrantedReward:'.length)
+              : null;
+            await enqueueEvent(tx, {
+              type: 'ORDER_COMPLETED',
+              eventId: uuidv4(),
+              timestamp: new Date(),
+              tenantId,
+              orderId: created.id,
+              orderNumber: created.orderNumber,
+              memberId: created.memberId,
+              subtotal: created.subtotal,
+              discountAmount: created.discountAmount,
+              channelDiscountAmount: created.channelDiscountAmount,
+              totalAmount: created.totalAmount,
+              clientOrigin,
+              paymentStatus: created.paymentStatus,
+              // 钱是平台代收的，不是店里收的 —— 和下面 notifyOrderPaid 的 pm 同一个口径。
+              // created.paymentMethod 是 POS 建单时猜的（可能是 CASH/CARD），不可信
+              paymentMethod: 'PLATFORM',
+              grantedRewardId,
+            } as any);
+          }
 
           return created;
           });
