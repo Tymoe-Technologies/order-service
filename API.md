@@ -170,6 +170,20 @@ POST /orders
 - `paymentMethod` (可选): 支付方式 - `CASH` (现金) | `CARD` (刷卡) | `ALIPAY` (支付宝) | `WECHAT` (微信支付) 等
 - `transactionId` (可选): 支付平台交易ID
 
+**建单初始状态** (响应中的 `status`):
+
+| 场景 | status | paymentStatus |
+|------|--------|---------------|
+| 普通订单 | `PENDING` | `UNPAID`，等支付回调推进状态 |
+| 预约订单 (`isScheduled=true`) | `SCHEDULED` | `UNPAID` |
+| 平台代收渠道 (`salesChannelId` 指向 `platformType` 非空的渠道) | `COMPLETED` | `PAID` |
+| 渠道记账/挂账 (`checkoutMode=CREDIT_ACCOUNT`) | `PENDING` | `PAID` |
+
+> 平台代收渠道即内置外卖渠道（UBER_EATS / DOORDASH / SKIP_THE_DISHES / GRUBHUB /
+> RITUAL / FANTUAN）。这类订单是商家在 POS 上补录平台已成交订单的**记账入口**，
+> 钱不经过本系统收单通道，不会产生 finance 支付记录、也就没有支付回调，
+> 因此建单时直接落 `COMPLETED` 并同步发出 `ORDER_COMPLETED` 事件（会员积分依赖此事件）。
+
 **响应**:
 ```json
 {
