@@ -39,6 +39,31 @@ export const FULFILLMENT_TYPES = [
   SUPPLY_ORDER_TYPES 和 Portal 的 FULFILLMENT_TYPES，并先想清楚它比外带多做什么。
 */
 
+/**
+ * 顾客在店内等餐、自己走到柜台取走的履约方式。
+ *
+ * 这类订单才：
+ *   - 上叫号屏（顾客看得见那块屏幕，叫号对他有意义）
+ *   - READY 超时可自动完成（人就在店里，5 分钟没动静通常是取走了、店员忘了点）
+ *
+ * 不在此列的：
+ *   - DELIVERY  骑手来取，顾客压根不在店里
+ *   - CURBSIDE  顾客在车里，看不到叫号屏；而且可能还在开过来的路上，
+ *               自动完成会变成「系统显示已完成、餐还没送出去」
+ *
+ * ⚠️ 刻意用白名单而不是「排除 DELIVERY」那种黑名单：
+ * 黑名单模式下每加一种履约方式都会默认继承店内自取的行为，
+ * CURBSIDE 就是这么错进叫号屏的。新类型要显式加进这里才会获得这些行为。
+ */
+export const IN_STORE_PICKUP_TYPES: readonly OrderType[] = [
+  OrderType.DINE_IN,
+  OrderType.TAKEOUT,
+];
+
+export function isInStorePickup(type: string | null | undefined): boolean {
+  return !!type && (IN_STORE_PICKUP_TYPES as readonly string[]).includes(type);
+}
+
 export type FulfillmentType = (typeof FULFILLMENT_TYPES)[number];
 
 export function isFulfillmentType(v: string): v is FulfillmentType {
