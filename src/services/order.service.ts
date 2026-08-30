@@ -716,6 +716,34 @@ class OrderService {
       const paymentStatus = (isAccountPayment || isPlatformCollect) ? 'PAID' : 'UNPAID';
       const paidAt: Date | null = (isAccountPayment || isPlatformCollect) ? new Date() : null;
 
+      /*
+        建单状态。**建单即 PAID 的两类单，状态必须在这里定死**——
+        它们的钱不经过我们的收单通道，finance 里没有对应 payment，
+        于是永远等不到支付回调（updatePaymentStatus），而 PENDING → CONFIRMED/
+        COMPLETED 的自动推进全寄生在那个回调里。
+
+        平台代收单（isPlatformCollect）之前已经修过，落 COMPLETED。
+        **记账单（isAccountPayment）当时漏了**，一直卡在「待确认」——
+        它同样建单即 PAID、同样等不到回调，只是没人发现。
+
+        记账单不能照抄 COMPLETED：平台单是骑手取走就完了，而记账单是顾客
+        在店里挂账消费，**餐还要做**。所以走和「现金单支付成功」一样的判断：
+        叫号屏开着就进队列等叫号（CONFIRMED），关着就支付即完成（COMPLETED）。
+        这段判断和 updatePaymentStatus 里的 autoComplete 是同一套语义，
+        改一边记得改另一边。
+      */
+      let initialStatus: 'SCHEDULED' | 'COMPLETED' | 'CONFIRMED' | 'PENDING';
+      if (data.isScheduled) {
+        initialStatus = 'SCHEDULED';
+      } else if (isPlatformCollect) {
+        initialStatus = 'COMPLETED';
+      } else if (isAccountPayment) {
+        const pickupCfg = await pickupNumberConfigService.getConfig(tenantId);
+        initialStatus = pickupCfg.queueDisplayEnabled ? 'CONFIRMED' : 'COMPLETED';
+      } else {
+        initialStatus = 'PENDING';
+      }
+
       // 业务时间 / 落库时间。离线补传单会带 clientCreatedAt，实时下单不带
       const placedAt = resolvePlacedAt(data.clientCreatedAt, new Date());
 
@@ -849,13 +877,15 @@ class OrderService {
                 而 PENDING → CONFIRMED/COMPLETED 的自动推进全寄生在那个回调里
                 （updatePaymentStatus），结果订单永远卡在「待确认」。所以这里直接落 COMPLETED。
 
-                注意挂账（checkoutMode=CREDIT_ACCOUNT）同样建单即 PAID，但它有独立的结算
-                接口会写 CONFIRMED，业务上也还要备餐，**不在此列**。
+                挂账（checkoutMode=CREDIT_ACCOUNT）**也在此列**。这里原来写着
+                「它有独立的结算接口会写 CONFIRMED，不在此列」—— 那个机制不存在：
+                markOrdersCreditSettled 只写 creditSettledAt，全仓没有任何地方
+                把记账单推出 PENDING。于是记账单和平台单一样永久卡在「待确认」，
+                只是没人发现。现在它按叫号屏配置落 CONFIRMED / COMPLETED，
+                见上面 initialStatus 那段。
               */
-              status: data.isScheduled
-                ? 'SCHEDULED'
-                : (isPlatformCollect ? 'COMPLETED' : 'PENDING'),
-              completedAt: (!data.isScheduled && isPlatformCollect) ? new Date() : null,
+              status: initialStatus,
+              completedAt: initialStatus === 'COMPLETED' ? new Date() : null,
 
               notes: data.notes || null,
               createdBy: userId,
