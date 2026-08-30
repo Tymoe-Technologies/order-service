@@ -733,21 +733,28 @@ router.get('/orders/reconciliation', internalAuth, async (req: Request, res: Res
   }
 });
 
-// ── 日结汇总（Finance Service 专用）────────────────────────────────
-// GET /internal/daily-summary?tenantId=&date=2026-04-29
-// 返回当日订单的税、折扣、小费、subtotal 汇总
+// ── 销售汇总（Finance Service 专用）────────────────────────────────
+// GET /internal/daily-summary?tenantId=&date=2026-04-29[&endDate=2026-05-05]
+// 返回该区间订单的税、折扣、小费、subtotal 汇总 + 按渠道类型分的三组
+//
+// 名字里的 daily 是历史遗留：加了可选的 endDate 之后它其实支持任意区间。
+// 没改名是因为对账那边（reconciliation.service）也在调，而**不传 endDate
+// 的行为和以前完全一样**（单日），改名只会制造一次无谓的双边部署。
 
 router.get('/daily-summary', internalAuth, async (req: Request, res: Response) => {
   try {
-    const { tenantId, date, timezone } = req.query as { tenantId: string; date: string; timezone?: string };
+    const { tenantId, date, endDate, timezone } = req.query as
+      { tenantId: string; date: string; endDate?: string; timezone?: string };
     if (!tenantId || !date) {
       res.status(400).json({ error: 'tenantId 和 date 必填' });
       return;
     }
 
-    // 用门店时区计算当日边界，确保日结范围与本地营业日一致
+    // 用门店时区计算区间边界，确保和本地营业日一致
     const tz = timezone || await organizationService.getStoreTimezone(tenantId);
-    const { periodStart, periodEnd } = dayBoundaries(date, tz);
+    const { periodStart } = dayBoundaries(date, tz);
+    // 不传 endDate = 单日（和加这个参数之前的行为一致）
+    const { periodEnd } = dayBoundaries(endDate || date, tz);
 
     /*
       ── 按「钱怎么进来的」把当日订单分三组 ──
@@ -846,6 +853,7 @@ router.get('/daily-summary', internalAuth, async (req: Request, res: Response) =
       success: true,
       data: {
         date,
+        endDate: endDate || date,
         // 顶层字段保持原样：finance 现有代码直接读这几个，别破坏
         orderCount:     total.orderCount,
         subtotal:       total.subtotal,
