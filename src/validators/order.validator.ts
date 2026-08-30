@@ -4,6 +4,19 @@ export const createOrderSchema = Joi.object({
   // 五种履约方式都要放行。少列一种的后果是那种单直接被拒——
   // CURBSIDE/DRIVE_THRU 加进枚举后这里漏改过一次，顾客选了路边取餐提交就 400
   orderType: Joi.string().valid('DINE_IN', 'TAKEOUT', 'DELIVERY', 'CURBSIDE', 'DRIVE_THRU').required(),
+  /*
+    谁负责配送。**漏了这个字段的后果是整类单被拒**（Joi 默认不允许未知键，
+    而这里没开 allowUnknown）—— POS 上的外卖平台单会全部 400，
+    然后被当成网络失败落进离线队列。上面 CURBSIDE/DRIVE_THRU 那条教训
+    说的是同一件事：新字段/新枚举值必须同步到这里。
+  */
+  deliveryProvider: Joi.string().valid('MERCHANT', 'PLATFORM').optional().allow(null),
+  /*
+    总额后端自己算，收下只为**不把请求打成 400**：POS 的 CreateOrderRequest
+    声明了这个字段（离线队列那边读它做显示），一旦有人照着类型填，
+    Joi 的未知键检查会让整个请求挂掉。放行、忽略，比让它炸掉安全。
+  */
+  totalAmount: Joi.number().integer().min(0).optional(),
   clientOrigin: Joi.string().valid('POS', 'WEB', 'KIOSK').default('POS'),
   tableNumber: Joi.string().max(50).optional().allow(null),
   // 离线补传：小票上没有取餐号，别补发一个（见 order.service 里那段说明）
