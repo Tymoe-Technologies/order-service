@@ -100,8 +100,8 @@ export class OrderStatusService {
     // 但从未真正建过配送单"的脱节（这正是这次要修的漏单问题的根源之一）
     if (
       order.status === 'PENDING' &&
-      order.orderType === 'DELIVERY' &&
-      order.orderSource === 'WEB' &&
+      // 只有本店自配送单有「必须先建 Uber 配送单」这条约束
+      order.deliveryProvider === 'MERCHANT' &&
       !order.deliveryConfirmedAt
     ) {
       throw new AppError(

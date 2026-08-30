@@ -82,6 +82,26 @@ model Order {
   customLabelData Json?  @map("custom_label_data") @db.Json  // 顾客自定义标签数据（WEB 订单）
   deliveryAddress Json?  @map("delivery_address") @db.Json   // 配送地址（DELIVERY 类型时）
 
+  /// 谁负责把这单送到顾客手上。仅 orderType=DELIVERY 时有意义，其余为 null。
+  ///
+  /// ## 为什么需要这个字段
+  /// `orderType` 回答的是「**怎么交到顾客手上**」（顾客视角，标准履约类型）；
+  /// 而本店真正要问的往往是「**要不要我安排骑手**」—— 那是另一件事。
+  /// 两者混用出过实事：watchdog / 自动接单两个 job 只按 `orderType='DELIVERY'`
+  /// 捞单，把 Uber Eats 平台单（也是 DELIVERY，且建单即 PAID、
+  /// deliveryConfirmedAt 永远为 null）当成「超时未确认的配送订单」报警。
+  ///
+  /// 修法不是给 Uber Direct 单换一个更专有的 orderType —— 那会把「谁来送」
+  /// 编码进「怎么交付」，是同一种维度混淆。Square Orders API 和 Olo 也都是
+  /// `type=DELIVERY` + 单独的 courier/provider 字段。
+  ///
+  /// ## 为什么不继续用 orderSource 推断
+  /// 现有代码里有 `orderSource === 'WEB' && orderType === 'DELIVERY'` 这种判据，
+  /// 它碰巧成立（本店渠道下单才走 Uber Direct），但表达的是「从哪下的单」
+  /// 而不是「谁送」。将来商家自有骑手、或者 POS 上手工录的平台单也要标配送时，
+  /// 这个推断就断了。显式字段没有这个问题。
+  deliveryProvider DeliveryProvider? @map("delivery_provider")
+
   // CURBSIDE 专用：车辆信息（店员靠它认车）+ 顾客点「我到了」的时间
   // { make, model, color, plate, spot } —— 各商家要求的字段不一样，用 JSON 不固化
   vehicleInfo     Json?     @map("vehicle_info") @db.Json
@@ -172,7 +192,10 @@ model Order {
   @@index([consumerId])              // "我的订单"查询
   @@index([channelConfigId])         // 渠道报表查询
   @@index([isScheduled, scheduledAt]) // 预约订单定时释放查询
-  @@index([orderType, deliveryConfirmedAt, deliveryConfirmDeadlineAt]) // watchdog / 自动接单 job 扫描待确认配送订单
+  // watchdog / 自动接单 job 扫描待确认的**本店自配送**单。
+  // deliveryProvider 排在最前：它的选择性最高（平台单一个都不该进来），
+  // 而这正是原来漏掉的那个条件。
+  @@index([deliveryProvider, orderType, deliveryConfirmedAt, deliveryConfirmDeadlineAt])
   @@map("orders")
 }
 
@@ -386,7 +409,10 @@ enum DeliveryPlatform {
 // 新增类型时注意：现有业务判断（叫号屏、自动接单、Uber 配送、配送确认）
 // 全部写成「是不是 DELIVERY」，所以任何非配送的新类型会自动获得自取类行为
 // （进叫号队列、可自动接单、不走 Uber）—— 这对 CURBSIDE/DRIVE_THRU 正好是对的。
-// 要加的是「配送类」新方式（比如第三方跑腿），必须回头审查那几处判断。
+//
+// ⚠️ 上面这条预警已经应验过一次：Uber Eats 平台单也是 DELIVERY，于是被
+// watchdog / 自动接单当成本店自配送单捞走。**「是不是 DELIVERY」不等于
+// 「要不要本店安排骑手」** —— 后者现在看 deliveryProvider，别再从 orderType 推。
 enum OrderType {
   DINE_IN
   TAKEOUT
@@ -394,6 +420,20 @@ enum OrderType {
   CURBSIDE     // 路边取餐：顾客到店在车里等，店员送出去
   DRIVE_THRU   // 车道取餐
   GIFT_CARD    // 礼品卡购买订单（不是履约方式，不出现在门店配置里）
+}
+
+/// 配送由谁负责。见 Order.deliveryProvider 上的长注释。
+///
+/// 这是和 OrderType **正交**的一个维度：orderType 说「怎么交到顾客手上」，
+/// 它说「谁来送」。两者拆开之后，`DELIVERY` 才能回到它本来的通用含义，
+/// 而不是事实上专指「Uber Direct 单」。
+enum DeliveryProvider {
+  /// 本店负责配送 —— 目前经 Uber Direct 履约。项目里的中文术语是「自配送」。
+  /// 只有这一类需要 POS 确认备餐时间、需要自动接单兜底、需要 watchdog 盯超时。
+  MERCHANT
+  /// 外卖平台负责配送（Uber Eats / DoorDash / Skip …）。
+  /// 本店只负责出餐，骑手到店取走 —— 上面那些配送流程一个都不该触发。
+  PLATFORM
 }
 
 // 订单行类型：区分卖的是商品还是耗材（餐具/购物袋/打包费）

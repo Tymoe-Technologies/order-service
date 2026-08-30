@@ -15,8 +15,16 @@ export function registerDeliveryHandler(bus: IEventBus): void {
   bus.on('ORDER_PAID', async function delivery_ORDER_PAID(event) {
     const e = event as OrderPaidEvent;
 
-    // 仅 DELIVERY 类型 + 有配送地址时触发
-    if (e.orderType !== 'DELIVERY') return;
+    /*
+      仅**本店自配送**单触发（下一步就是去 uber-service 下配送单）。
+
+      判据从 orderType 换成 deliveryProvider：平台单同样是 DELIVERY，
+      只按类型判的话，Uber Eats 的单支付成功后本店也会去叫一个 Uber Direct
+      骑手 —— 那单本来就有平台骑手在送。
+      （原来没出事只是因为下面那道 `!deliveryAddress` 把它挡住了：
+       平台单没有配送地址。靠一个次要条件兜住主要判断，是运气不是设计。）
+    */
+    if (e.deliveryProvider !== 'MERCHANT') return;
     if (!e.snapshot) return;
 
     const deliveryAddress = (e.snapshot as any).deliveryAddress;

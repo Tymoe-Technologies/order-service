@@ -165,6 +165,15 @@ router.post('/uber-eats-order', internalAuth, async (req: Request, res: Response
         tenantId,
         orderNumber,
         orderType: 'DELIVERY',
+        /*
+          平台自己的骑手来取 —— 本店只负责出餐。
+
+          这一行是修掉一个既存 bug 的关键：原来这单只有 orderType='DELIVERY'，
+          而它建单即 PAID、deliveryConfirmedAt 又永远是 null（那是 Uber Direct
+          专用字段），于是 delivery-confirmation-watchdog 三个条件全中，
+          把平台单当成「超时未确认的配送订单」一直报警。
+        */
+        deliveryProvider: 'PLATFORM',
         orderSource: 'UBER_EATS',
         status: 'PENDING',
         externalOrderId,
@@ -401,6 +410,8 @@ router.get('/delivery-pending-confirmations', internalAuth, async (req: Request,
       where: {
         tenantId,
         orderType: 'DELIVERY',
+        // 只补偿本店自配送单 —— 平台单没有 Uber 配送单要建
+        deliveryProvider: 'MERCHANT',
         paymentStatus: 'PAID',
         // 用专用字段判断"是否已确认"，不借用通用订单状态机：
         // 之前用 status notIn(COMPLETED, CANCELLED)/仅 PENDING 都是拿状态字段做另一件事的判断依据，
