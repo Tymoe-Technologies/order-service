@@ -20,36 +20,60 @@ import { join } from 'node:path'
 
 const src = readFileSync(join(__dirname, 'order.service.ts'), 'utf8')
 
-/** 抠出建单 create 里那段 status 赋值（到 completedAt 那行为止） */
-function statusAssignment(): string {
-  const m = src.match(/status: data\.isScheduled[\s\S]{0,300}?completedAt:.*$/m)
-  assert.ok(m, '找不到建单时的 status 赋值（正则可能失效了）')
+/**
+ * 抠出建单状态的判定链（`let initialStatus` 到那个 if-else 结束）。
+ *
+ * 实现形式换过一次：原来是 create 里的一个三元表达式
+ * `status: data.isScheduled ? ... : (isPlatformCollect ? 'COMPLETED' : 'PENDING')`，
+ * 加上挂账那一档之后三元套不下，抽成了独立的 if-else 链。
+ */
+function statusDecision(): string {
+  // 收尾锚在 else 分支的 'PENDING' 上：非贪婪匹配到第一个 `}` 的话，
+  // 只会抠到 if 的第一个分支（第一版就是这么失败的）
+  const m = src.match(/let initialStatus:[\s\S]*?initialStatus = 'PENDING';\s*\n\s*\}/)
+  assert.ok(m, '找不到建单状态的判定链（正则可能失效了）')
   return m![0]
 }
 
-describe('平台代收单建单即完成', () => {
-  test('status 判定认得 isPlatformCollect，落 COMPLETED 而不是 PENDING', () => {
-    const s = statusAssignment()
+describe('建单即 PAID 的单不能落 PENDING', () => {
+  test('平台代收单落 COMPLETED', () => {
     assert.match(
-      s, /isPlatformCollect\s*\?\s*'COMPLETED'/,
+      statusDecision(), /isPlatformCollect\)\s*\{\s*initialStatus = 'COMPLETED'/,
       '平台代收单必须建单即 COMPLETED —— 它等不到支付回调，落 PENDING 就是永久卡死',
     )
   })
 
   test('落 COMPLETED 的同时写 completedAt', () => {
-    const s = statusAssignment()
     assert.match(
-      s, /completedAt:.*isPlatformCollect/,
+      src, /completedAt: initialStatus === 'COMPLETED' \? new Date\(\) : null/,
       'status 写了 COMPLETED 却不写 completedAt，报表和对账会拿到空的完成时间',
     )
   })
 
-  test('挂账（CREDIT_ACCOUNT）不跟着落 COMPLETED', () => {
-    const s = statusAssignment()
-    // 挂账同样建单即 PAID，但它有独立结算接口写 CONFIRMED，业务上还要备餐
+  /*
+    这条原来断言的是**反面**：「挂账不跟着落 COMPLETED」，依据是源码注释里
+    那句「它有独立的结算接口会写 CONFIRMED」。
+
+    那个机制**不存在**。markOrdersCreditSettled 只写 creditSettledAt，
+    全仓搜过 CONFIRMED，没有任何地方把记账单推出 PENDING —— 于是记账单
+    和平台单犯的是同一个病（建单即 PAID → 等不到支付回调 → 永久「待确认」），
+    上次修 platformCollect 时漏了它，而这条测试还在替那个错误前提站岗。
+  */
+  test('挂账单也不能落 PENDING —— 它同样等不到支付回调', () => {
+    const d = statusDecision()
+    assert.match(d, /isAccountPayment/, '判定链里必须认得挂账单')
     assert.doesNotMatch(
-      s, /isAccountPayment/,
-      '挂账单不该在建单时就完成 —— 它还要备餐，且有独立的结算接口负责推进状态',
+      d.match(/isAccountPayment\)\s*\{[\s\S]*?\} else \{/)?.[0] ?? '',
+      /'PENDING'/,
+      '挂账单落 PENDING 就是永久卡死 —— 没有任何代码会推进它',
+    )
+  })
+
+  test('挂账单按叫号屏配置分流（和现金单支付成功后同一套语义）', () => {
+    assert.match(
+      statusDecision(),
+      /queueDisplayEnabled \? 'CONFIRMED' : 'COMPLETED'/,
+      '挂账单业务上还要备餐：叫号屏开着就进队列等叫号，关着才支付即完成',
     )
   })
 })
