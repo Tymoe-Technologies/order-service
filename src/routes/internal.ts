@@ -788,9 +788,26 @@ router.get('/daily-summary', internalAuth, async (req: Request, res: Response) =
       tipAmount:      true,
       totalAmount:    true,
     } as const;
+      /*
+        ── 销售额算「已付款且没取消」，不是「已完成」──
+
+        改之前三处报表查询都写 `status = 'COMPLETED'`，于是**正在备餐的单
+        不算销售额** —— 钱已经收了、税已经收了，只因为餐还没做好就不进报表。
+        午市高峰时报表会明显偏低，收工后又突然涨上来。
+
+        实测：库里 CONFIRMED/PAID 一单 $18.09（税 $0.86），COMPLETED 一单 $6.99，
+        报表只显示 $6.99、税 $0.00 —— 那 $0.86 的税就是这么丢的。
+
+        销售额和「餐做没做好」无关，和「钱收没收」有关。这也让它和 finance
+        那边的口径对上了：payments 是 `status = 'SUCCEEDED'` 就算，同样不看履约状态。
+
+        cancelledAt 判 null 而不是 `status != 'CANCELLED'`：退款流程里状态会先变，
+        而取消时刻是专用字段，不会被别的流转覆盖。
+      */
     const dayWhere = {
       tenantId,
-      status: 'COMPLETED' as const,
+      paymentStatus: 'PAID' as const,
+      cancelledAt: null,
       createdAt: { gte: periodStart, lte: periodEnd },
     };
     /** 把 aggregate 的结果摊平成好读的形状 */
@@ -913,7 +930,9 @@ router.get('/top-items', internalAuth, async (req: Request, res: Response) => {
       FROM order_items oi
       JOIN orders o ON o.id = oi.order_id
       WHERE o.tenant_id = ${tenantId}::uuid
-        AND o.status = 'COMPLETED'
+        -- 口径同 daily-summary：已付款且未取消，不是「已完成」（见那边的长注释）
+        AND o.payment_status = 'PAID'
+        AND o.cancelled_at IS NULL
         AND o.created_at >= ${start}
         AND o.created_at <= ${end}
       GROUP BY oi.item_name
@@ -966,7 +985,9 @@ router.get('/sales-by-hour', internalAuth, async (req: Request, res: Response) =
         SUM(o.total_amount)   AS total_amount
       FROM orders o
       WHERE o.tenant_id = ${tenantId}::uuid
-        AND o.status = 'COMPLETED'
+        -- 口径同 daily-summary：已付款且未取消，不是「已完成」（见那边的长注释）
+        AND o.payment_status = 'PAID'
+        AND o.cancelled_at IS NULL
         AND o.created_at >= ${start}
         AND o.created_at <= ${end}
       GROUP BY hour
