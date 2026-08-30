@@ -237,6 +237,9 @@ model OrderItem {
   order          Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
   orderItemModifiers OrderItemModifier[]
 
+  /// 库里本来就有这个索引，schema 一直没写 —— db push 会把它删掉。
+  /// 它服务于「按订单取行、并区分商品行/耗材行」这个查询（见 lineKind）。
+  @@index([orderId, lineKind])
   @@map("order_items")
 }
 
@@ -733,7 +736,12 @@ model MerchantOnlineOrderConfig {
 //   DINE_IN    { requireTableNumber: true }
 //   DELIVERY   配送半径/配送费仍在 MerchantOnlineOrderConfig（历史字段，未搬）
 model MerchantFulfillmentOption {
-  id              String    @id @default(uuid()) @db.Uuid
+  /// 由**数据库**生成而不是 Prisma 客户端。
+  /// 库里本来就有 `gen_random_uuid()` 默认值，schema 一直没写 —— 于是
+  /// `prisma db push` 会把它当成多余的删掉，之后任何绕过 Prisma 的写入
+  /// （原始 SQL、别的服务、手工插数据）都会因为拿不到 id 而失败。
+  /// 写进来是为了让 schema 反映真实状态，顺带多一层防御。
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   merchantId      String    @map("merchant_id") @db.Uuid
   fulfillmentType OrderType @map("fulfillment_type")
   enabled         Boolean   @default(false)
@@ -742,7 +750,9 @@ model MerchantFulfillmentOption {
   config          Json?     @db.Json
 
   createdAt       DateTime  @default(now()) @map("created_at")
-  updatedAt       DateTime  @updatedAt @map("updated_at")
+  /// @default(now()) 是补的：@updatedAt 只管**更新**时刷新，不产生插入默认值，
+  /// 而库里那个 CURRENT_TIMESTAMP 是插入时用的。少了它 db push 会删掉库端默认值。
+  updatedAt       DateTime  @updatedAt @default(now()) @map("updated_at")
 
   @@unique([merchantId, fulfillmentType])
   @@index([merchantId, enabled])
@@ -804,7 +814,12 @@ model PickupNumberConfig {
 /// 「要通知的事」和业务数据写在同一个事务里，再由 relay 一条条投递。
 /// 一个事件一个 handler 一行 —— 重试只重试失败的那个，不会把已成功的重跑一遍。
 model OutboxEvent {
-  id            String    @id @default(uuid()) @db.Uuid
+  /// 由**数据库**生成而不是 Prisma 客户端。
+  /// 库里本来就有 `gen_random_uuid()` 默认值，schema 一直没写 —— 于是
+  /// `prisma db push` 会把它当成多余的删掉，之后任何绕过 Prisma 的写入
+  /// （原始 SQL、别的服务、手工插数据）都会因为拿不到 id 而失败。
+  /// 写进来是为了让 schema 反映真实状态，顺带多一层防御。
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId      String    @map("tenant_id") @db.Uuid
   eventType     String    @map("event_type") @db.VarChar(50)
   handler       String    @db.VarChar(80)
