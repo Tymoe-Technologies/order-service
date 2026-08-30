@@ -129,6 +129,19 @@ interface CreateOrderItem {
     quantity: number;
   }>;
   specialNotes?: string;
+
+  /*
+    耗材行（餐具 / 购物袋 / 打包费）。itemId 存的是 catalog_supplies.id，
+    落库时写 lineKind=SUPPLY —— 报表的「按商品」正是按这个过滤的，
+    不写的话打包袋会混进热销榜。
+
+    Web 端走 createTemporaryOrderFromSnapshot 时早就有这两个字段了，
+    POS 这条路径一直没有：商家配的 AUTO 规则（如每单收 $0.25 袋子费）
+    Web 单收得到、POS 单一分收不到。
+  */
+  isSupply?: boolean;
+  /** auto = 按商家规则自动加的，selected = 员工手动加的 */
+  supplyOrigin?: 'auto' | 'selected';
 }
 
 interface CreateOrderData {
@@ -616,6 +629,16 @@ class OrderService {
             attributes: item.attributes || null,
             modifiers: null,  // 不再写 JSON，改用 OrderItemModifier 关系表
             specialNotes: item.specialNotes || null,
+
+            /*
+              耗材行：itemId 是 catalog_supplies.id 而不是 catalog_items.id，
+              靠 lineKind 区分（默认 PRODUCT）。和 Web 那条路径
+              （createTemporaryOrderFromSnapshot）写的是同一组字段。
+            */
+            ...(item.isSupply && {
+              lineKind: 'SUPPLY' as const,
+              supplyOrigin: item.supplyOrigin ?? null,
+            }),
           };
         });
       }

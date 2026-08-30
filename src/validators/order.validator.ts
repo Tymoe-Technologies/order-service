@@ -52,6 +52,13 @@ export const createOrderSchema = Joi.object({
           )
           .optional(),
         specialNotes: Joi.string().optional().allow(null),
+
+        /*
+          耗材行（餐具 / 购物袋 / 打包费）。itemId 存的是 catalog_supplies.id。
+          不放行的话 Joi 会把整个请求打成 400 —— POS 就是这么一直没能带耗材下单的。
+        */
+        isSupply: Joi.boolean().optional(),
+        supplyOrigin: Joi.string().valid('auto', 'selected').optional().allow(null),
       })
     )
     .min(1)
