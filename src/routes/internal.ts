@@ -749,20 +749,57 @@ router.get('/daily-summary', internalAuth, async (req: Request, res: Response) =
     const tz = timezone || await organizationService.getStoreTimezone(tenantId);
     const { periodStart, periodEnd } = dayBoundaries(date, tz);
 
-    const [agg, refundAgg] = await Promise.all([
+    /*
+      ── 按「钱怎么进来的」把当日订单分三组 ──
+
+      finance 的销售汇总主数据源是 **payments 表**，而平台代收单和渠道挂账单
+      **不产生 payment 记录**（钱不经过我们的收单通道）。于是同一份报表里：
+        · totalOrders / subtotal / tax  取自这个接口 → **含**这两类单
+        · totalGross / 各支付方式明细   取自 payments → **不含**
+      两个数对不上，差额正好就是这两类单 —— 而看的人不知道差在哪。
+
+      所以这里直接把三组分开返回，让 finance 能分别展示、也能加总对上：
+        platform  外卖平台代收（渠道 platformType 非空）
+        credit    渠道挂账（checkoutMode=CREDIT_ACCOUNT）
+        inStore   其余：现金 / 刷卡 / 礼品卡…（这组才该和 payments 对得上）
+
+      判据用**渠道配置**而不是订单自身的 paymentMethod：平台渠道单建单时
+      POS 只能猜支付方式，历史上出现过标成 CASH 的（同下面对账排除那段）。
+    */
+    const noPaymentChannels = await prisma.orderSourceConfig.findMany({
+      where: { tenantId, OR: [{ platformType: { not: null } }, { checkoutMode: 'CREDIT_ACCOUNT' }] },
+      select: { id: true, platformType: true, checkoutMode: true },
+    });
+    const platformChannelIds = noPaymentChannels.filter(c => c.platformType != null).map(c => c.id);
+    const creditChannelIds = noPaymentChannels
+      .filter(c => c.platformType == null && c.checkoutMode === 'CREDIT_ACCOUNT').map(c => c.id);
+
+    const SUMS = {
+      subtotal:       true,
+      taxAmount:      true,
+      discountAmount: true,
+      tipAmount:      true,
+      totalAmount:    true,
+    } as const;
+    const dayWhere = {
+      tenantId,
+      status: 'COMPLETED' as const,
+      createdAt: { gte: periodStart, lte: periodEnd },
+    };
+    /** 把 aggregate 的结果摊平成好读的形状 */
+    const flat = (a: any) => ({
+      orderCount:     a._count.id,
+      subtotal:       Number(a._sum.subtotal       ?? 0),
+      taxAmount:      Number(a._sum.taxAmount      ?? 0),
+      discountAmount: Number(a._sum.discountAmount ?? 0),
+      tipAmount:      Number(a._sum.tipAmount      ?? 0),
+      totalAmount:    Number(a._sum.totalAmount    ?? 0),
+    });
+
+    const [agg, refundAgg, platformAgg, creditAgg] = await Promise.all([
       prisma.order.aggregate({
-        where: {
-          tenantId,
-          status: 'COMPLETED',
-          createdAt: { gte: periodStart, lte: periodEnd },
-        },
-        _sum: {
-          subtotal:       true,
-          taxAmount:      true,
-          discountAmount: true,
-          tipAmount:      true,
-          totalAmount:    true,
-        },
+        where: dayWhere,
+        _sum: SUMS,
         _count: { id: true },
       }),
       prisma.order.aggregate({
@@ -774,18 +811,59 @@ router.get('/daily-summary', internalAuth, async (req: Request, res: Response) =
         _sum: { totalAmount: true },
         _count: { id: true },
       }),
+      // 平台代收：没有渠道配置时 in [] 会匹配 0 行，正是想要的
+      prisma.order.aggregate({
+        where: { ...dayWhere, channelConfigId: { in: platformChannelIds } },
+        _sum: SUMS,
+        _count: { id: true },
+      }),
+      // 渠道挂账
+      prisma.order.aggregate({
+        where: { ...dayWhere, channelConfigId: { in: creditChannelIds } },
+        _sum: SUMS,
+        _count: { id: true },
+      }),
     ]);
+
+    const total = flat(agg);
+    const platform = flat(platformAgg);
+    const credit = flat(creditAgg);
+    /*
+      店内组用**减法**而不是再查一次：
+      三组必须严格加起来等于总数，各查各的话「没有渠道的单」「渠道被删了的单」
+      这类边角会两边都不算进去，报表上就少一截还查不出原因。
+    */
+    const inStore = {
+      orderCount:     total.orderCount     - platform.orderCount     - credit.orderCount,
+      subtotal:       total.subtotal       - platform.subtotal       - credit.subtotal,
+      taxAmount:      total.taxAmount      - platform.taxAmount      - credit.taxAmount,
+      discountAmount: total.discountAmount - platform.discountAmount - credit.discountAmount,
+      tipAmount:      total.tipAmount      - platform.tipAmount      - credit.tipAmount,
+      totalAmount:    total.totalAmount    - platform.totalAmount    - credit.totalAmount,
+    };
 
     res.json({
       success: true,
       data: {
         date,
-        orderCount:     agg._count.id,
-        subtotal:       Number(agg._sum.subtotal       ?? 0),
-        taxAmount:      Number(agg._sum.taxAmount      ?? 0),
-        discountAmount: Number(agg._sum.discountAmount ?? 0),
-        tipAmount:      Number(agg._sum.tipAmount      ?? 0),
-        totalAmount:    Number(agg._sum.totalAmount    ?? 0),
+        // 顶层字段保持原样：finance 现有代码直接读这几个，别破坏
+        orderCount:     total.orderCount,
+        subtotal:       total.subtotal,
+        taxAmount:      total.taxAmount,
+        discountAmount: total.discountAmount,
+        tipAmount:      total.tipAmount,
+        totalAmount:    total.totalAmount,
+        /**
+         * 按「钱怎么进来的」分的三组，加起来等于上面的顶层数字。
+         *
+         *   platform  外卖平台代收 —— 钱在平台手里，等结算打款
+         *   credit    渠道挂账 —— 还没实收，挂应收账款等账期
+         *   inStore   其余 —— 这组才该和 finance 的 payments 汇总对得上
+         *
+         * finance 报表拿它区分「卖了多少」和「收到多少」：两者的差额
+         * 一直存在，只是以前没人说得清差在哪。
+         */
+        byChannelKind: { platform, credit, inStore },
         refundCount:    refundAgg._count.id,
         refundAmount:   Number(refundAgg._sum.totalAmount ?? 0),
       },
