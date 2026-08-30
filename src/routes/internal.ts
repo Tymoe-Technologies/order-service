@@ -930,6 +930,10 @@ router.get('/top-items', internalAuth, async (req: Request, res: Response) => {
       FROM order_items oi
       JOIN orders o ON o.id = oi.order_id
       WHERE o.tenant_id = ${tenantId}::uuid
+        -- 只统计**商品**，不含耗材（餐具/购物袋/打包费）。
+        -- 这是「热销商品」榜，把购物袋排进去既没意义又会挤掉真正的商品：
+        -- 耗材几乎每单都有，件数必然名列前茅。
+        AND oi.line_kind = 'PRODUCT'
         -- 口径同 daily-summary：已付款且未取消，不是「已完成」（见那边的长注释）
         AND o.payment_status = 'PAID'
         AND o.cancelled_at IS NULL
