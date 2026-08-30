@@ -972,6 +972,23 @@ router.get('/sales-by-hour', internalAuth, async (req: Request, res: Response) =
     const tz = timezone || await organizationService.getStoreTimezone(tenantId);
     const { periodStart: start } = dayBoundaries(startDate, tz);
     const { periodEnd: end } = dayBoundaries(endDate, tz);
+    /*
+      ⚠️ 下面那句 EXTRACT 必须**两次** AT TIME ZONE。
+
+      created_at 是 `timestamp without time zone`，里面存的是 UTC 时刻。
+      对这种列，`ts AT TIME ZONE 'X'` 的语义是**反的** —— 它把值当作 X 时区的
+      本地时间去解释、转成 timestamptz，而不是「转换到 X 时区」。
+
+      实测：库里 03:22（UTC，即温哥华 20:22 晚餐高峰），只写一次
+      `AT TIME ZONE 'America/Vancouver'` 算出来是 **10 点** ——
+      整条曲线整体偏移，晚市高峰被画到上午。
+
+      正确写法是先 `AT TIME ZONE 'UTC'` 把它标记成 timestamptz、再转门店时区。
+      order.service.ts 里那个按小时聚合就是这么写的，这里当初漏了第一步。
+
+      （这段说明放在模板字符串**外面**：里面不能出现反引号 —— 会提前结束
+       模板串，也不能出现 ${...} —— 会被当成插值。第一版就是这么写崩的。）
+    */
     const sqlTz = pgTimezone(tz);
 
     const rows = await prisma.$queryRaw<Array<{
@@ -980,7 +997,8 @@ router.get('/sales-by-hour', internalAuth, async (req: Request, res: Response) =
       total_amount: bigint;
     }>>`
       SELECT
-        EXTRACT(HOUR FROM o.created_at AT TIME ZONE ${sqlTz})::int AS hour,
+        -- ⚠️ 必须两次 AT TIME ZONE，见下方函数外的说明
+        EXTRACT(HOUR FROM (o.created_at AT TIME ZONE 'UTC' AT TIME ZONE ${sqlTz}))::int AS hour,
         COUNT(o.id)           AS order_count,
         SUM(o.total_amount)   AS total_amount
       FROM orders o
