@@ -45,6 +45,13 @@ export interface OrderPaidEvent extends BaseEvent {
   type: 'ORDER_PAID';
   clientOrigin: string;
   orderType: string;
+  /**
+   * 谁负责配送（见 Order.deliveryProvider）。只有 MERCHANT 才要去叫 Uber Direct 骑手。
+   *
+   * 必须带在事件里而不是让消费者按 orderType 猜：平台单同样是 DELIVERY，
+   * 单靠 orderType 判断会让平台单支付成功后也去下 Uber 配送单。
+   */
+  deliveryProvider?: 'MERCHANT' | 'PLATFORM' | null;
   previousStatus: string;     // 旧的 order.status（判断 PENDING → CONFIRMED）
   paymentIntentId?: string;
   snapshot?: any;             // 快照数据（含 deliveryAddress）

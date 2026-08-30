@@ -57,6 +57,15 @@ async function tick(): Promise<void> {
     const overdueOrders = await prisma.order.findMany({
       where: {
         orderType: 'DELIVERY',
+        /*
+          只捞**本店自配送**单。
+
+          漏了这个条件时，Uber Eats 平台单（同样是 DELIVERY、建单即 PAID、
+          deliveryConfirmedAt 永远为 null）会全部命中，被当成超时未确认的
+          配送订单处理 —— 而那些单本店根本不负责配送，没有「确认备餐时间」
+          这一步可做。
+        */
+        deliveryProvider: 'MERCHANT',
         paymentStatus: 'PAID',
         deliveryConfirmedAt: null,
         cancelledAt: null,

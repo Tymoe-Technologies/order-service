@@ -30,7 +30,8 @@ async function buildDeliveryPayload(orderId: string, tenantId: string, prepTimeM
   }
 
   const deliveryAddress = order.deliveryAddress as any;
-  if (order.orderType !== 'DELIVERY' || !deliveryAddress) {
+  // 平台单没有「确认备餐时间」这一步（骑手由平台派），所以判的是自配送而非 DELIVERY
+  if (order.deliveryProvider !== 'MERCHANT' || !deliveryAddress) {
     throw new AppError(400, 'NOT_DELIVERY_ORDER', '不是配送订单');
   }
   if (order.deliveryConfirmedAt) {

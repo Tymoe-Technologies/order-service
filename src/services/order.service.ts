@@ -133,6 +133,14 @@ interface CreateOrderItem {
 
 interface CreateOrderData {
   orderType: 'DINE_IN' | 'TAKEOUT' | 'DELIVERY' | 'CURBSIDE' | 'DRIVE_THRU';
+  /**
+   * 谁负责配送。**只在 orderType=DELIVERY 时有意义**，别的类型传了会被忽略。
+   *
+   * 不传时按 MERCHANT 落库 —— 本店自有渠道（Web / POS）下的配送单默认是
+   * 本店安排骑手（Uber Direct）。平台代收的单必须**显式**传 PLATFORM，
+   * 否则会被 watchdog / 自动接单当成自配送单捞走。
+   */
+  deliveryProvider?: 'MERCHANT' | 'PLATFORM';
   clientOrigin?: 'POS' | 'WEB' | 'KIOSK';
   tableNumber?: string;
   customerName?: string;
@@ -765,6 +773,14 @@ class OrderService {
               pickupNumber: posPickupNumber,
               messageId: messageId || null,  // 保存 messageId 用于幂等性检查
               orderType: data.orderType,
+              /*
+                只有配送单才有「谁来送」。不传按 MERCHANT —— 本店渠道下的
+                配送单默认自己安排骑手；平台代收的单要显式传 PLATFORM，
+                否则会被 watchdog / 自动接单当成自配送单捞走。
+              */
+              deliveryProvider: data.orderType === 'DELIVERY'
+                ? (data.deliveryProvider ?? 'MERCHANT')
+                : null,
               orderSource: clientOrigin,
               tableNumber: data.tableNumber || null,
               customerName: data.customerName || null,
@@ -1195,8 +1211,8 @@ class OrderService {
     // 但实际从未建过配送单的脱节（uber-service/uber 平台侧完全不知道这笔订单）
     if (
       fromStatus === 'PENDING' &&
-      order.orderType === 'DELIVERY' &&
-      order.orderSource === 'WEB' &&
+      // 只有本店自配送单有「必须先建 Uber 配送单」这条约束
+      order.deliveryProvider === 'MERCHANT' &&
       !order.deliveryConfirmedAt
     ) {
       throw new AppError(
@@ -1286,8 +1302,10 @@ class OrderService {
     // 预约配送单（Uber Direct）不能直接跳到 CONFIRMED——必须先真正建好配送单才行，
     // 释放到 PENDING，走跟非预约配送单一样的接单流程（弹窗/订单中心/自动接单 job）；
     // 其余类型（自取/堂食）维持原逻辑，直接跳到 CONFIRMED，无需商家接单
-    const deliveryDue = due.filter(o => o.orderType === 'DELIVERY');
-    const otherDue = due.filter(o => o.orderType !== 'DELIVERY');
+    /* 停在 PENDING 等接单的只有**本店自配送**单：平台单没有「确认备餐」这一步，
+       跟其它单一样直接 CONFIRMED 即可 */
+    const deliveryDue = due.filter(o => o.deliveryProvider === 'MERCHANT');
+    const otherDue = due.filter(o => o.deliveryProvider !== 'MERCHANT');
     const AUTO_CONFIRM_DEADLINE_MINUTES = Number(process.env.AUTO_CONFIRM_DEADLINE_MINUTES) || 15;
     const deliveryDeadline = new Date(now.getTime() + AUTO_CONFIRM_DEADLINE_MINUTES * 60 * 1000);
 
@@ -2022,6 +2040,8 @@ class OrderService {
             isScheduled,
             scheduledAt: (snapshot as any).scheduledAt ?? null,
             orderType: snapshot.orderType as any,
+            /* 顾客在本店自有渠道下的配送单 —— 骑手由本店经 Uber Direct 安排 */
+            deliveryProvider: snapshot.orderType === 'DELIVERY' ? 'MERCHANT' : null,
             consumerId: (snapshot as any).consumerId || undefined,
             memberId: memberId || undefined,
             customerName: snapshot.customerName,
@@ -2267,14 +2287,21 @@ class OrderService {
           const autoComplete =
             !queueDisplayOn && (
               order.orderSource === 'POS' ||
-              (order.orderSource === 'WEB' && order.orderType !== 'DELIVERY' && !order.isScheduled)
+              (order.orderSource === 'WEB' && order.deliveryProvider !== 'MERCHANT' && !order.isScheduled)
             );
 
           // Uber Direct 配送单：支付成功后必须停在 PENDING 等接单，
           // 不能在这里自动推到 CONFIRMED——CONFIRMED 只能由 confirmDeliveryOrder 在
           // 真正建好 Uber 配送单后联动写入（否则 POS 界面会显示"备餐中"但实际没人接过单，
           // 接单按钮也因为状态不是 PENDING 而消失，订单卡死）
-          const isUberDelivery = order.orderSource === 'WEB' && order.orderType === 'DELIVERY';
+          /*
+            改用 deliveryProvider 而不是 `orderSource==='WEB' && orderType==='DELIVERY'`。
+
+            旧判据碰巧成立（本店渠道下单才走 Uber Direct），但它表达的是
+            「从哪下的单」而不是「谁送」—— POS 上手工录的平台单也是 DELIVERY，
+            靠 orderSource 排除等于依赖一个巧合。
+          */
+          const isUberDelivery = order.deliveryProvider === 'MERCHANT';
 
           if (autoComplete) {
             updateData.status = 'COMPLETED';
@@ -2329,6 +2356,7 @@ class OrderService {
           previousStatus: order.status,
           orderSource: order.orderSource,
           orderType: order.orderType,
+          deliveryProvider: order.deliveryProvider,
           snapshot,
           memberId: updatedOrder.memberId ?? null,
           subtotal: updatedOrder.subtotal,
@@ -2375,6 +2403,7 @@ class OrderService {
         clientOrigin: (result as any)._meta.orderSource,
         orderSource: (result as any)._meta.orderSource,
         orderType: (result as any)._meta.orderType,
+        deliveryProvider: (result as any)._meta.deliveryProvider ?? null,
         previousStatus: (result as any)._meta.previousStatus,
         paymentIntentId: data.paymentIntentId,
         snapshot: (result as any)._meta.snapshot,
