@@ -15,11 +15,18 @@
  * ## 为什么 400 这么难发现
  * POS 建单失败会走离线队列兜底，那条路是为「网络不通」设计的 —— 它把 400
  * 也当成可重试的失败吞掉了，界面上看不出任何报错。
+ *
+ * ## items[] 里的字段是同一个坑的盲区
+ * 上面两次都发生在**顶层**字段，所以最早只比对了顶层。但 `items[]` 里的
+ * 嵌套 Joi.object() 一样不允许未知键 —— 耗材行的 isSupply / supplyOrigin
+ * 就长在那里。所以下面把行内字段也比一遍，另外直接拿 schema 跑一次真校验：
+ * 源码比对只能证明「名字都在」，跑一次才证明「这个请求真的能过」。
  */
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { createOrderSchema } from './order.validator'
 
 const validator = readFileSync(join(__dirname, 'order.validator.ts'), 'utf8')
 const orderService = readFileSync(join(__dirname, '..', 'services', 'order.service.ts'), 'utf8')
@@ -42,6 +49,42 @@ function createOrderDataFields(): string[] {
       if (f) fields.push(f[1])
     }
     depth += opens - closes
+  }
+  return fields
+}
+
+/** 抠出 CreateOrderItem（items[] 每一行）的字段名 */
+function createOrderItemFields(): string[] {
+  const m = orderService.match(/interface CreateOrderItem \{([\s\S]*?)\n\}/)
+  assert.ok(m, '找不到 CreateOrderItem（正则可能失效了）')
+  const body = m![1]
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '')
+  const fields: string[] = []
+  let depth = 0
+  for (const line of body.split('\n')) {
+    if (depth === 0) {
+      const f = line.match(/^\s*(\w+)\??\s*:/)
+      if (f) fields.push(f[1])
+    }
+    depth += (line.match(/[{[]/g) || []).length - (line.match(/[}\]]/g) || []).length
+  }
+  return fields
+}
+
+/** 抠出 validator 里 items[] 那个 Joi.object 声明的键 */
+function validatorItemFields(): string[] {
+  const m = validator.match(/items: Joi\.array\(\)\s*\n\s*\.items\(\s*\n\s*Joi\.object\(\{([\s\S]*?)\n\s{6}\}\)/)
+  assert.ok(m, '找不到 items[] 的 Joi.object（正则可能失效了）')
+  const body = m![1].replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const fields: string[] = []
+  let depth = 0
+  for (const line of body.split('\n')) {
+    if (depth === 0) {
+      const f = line.match(/^\s{8}(\w+)\s*:/)
+      if (f) fields.push(f[1])
+    }
+    depth += (line.match(/[{[(]/g) || []).length - (line.match(/[}\])]/g) || []).length
   }
   return fields
 }
@@ -87,6 +130,48 @@ describe('建单 validator 的字段清单', () => {
     for (const t of ['DINE_IN', 'TAKEOUT', 'DELIVERY', 'CURBSIDE', 'DRIVE_THRU']) {
       assert.match(validator, new RegExp(`orderType[\\s\\S]{0,200}'${t}'`),
         `orderType 少放行了 ${t}`)
+    }
+  })
+
+  test('CreateOrderItem 的每个字段都在 items[] 里放行', () => {
+    const data = createOrderItemFields()
+    const allowed = new Set(validatorItemFields())
+    assert.ok(data.length > 5, `CreateOrderItem 只抠到 ${data.length} 个字段，正则大概失效了`)
+
+    const missing = data.filter(f => !allowed.has(f))
+    assert.deepEqual(
+      missing, [],
+      `items[] 里这些字段服务层收得下、但 validator 会拒：${missing.join(', ')}`,
+    )
+  })
+
+  /*
+    源码比对只证明「名字都在」。真跑一次才证明这个请求能过 ——
+    比如 supplyOrigin 的 valid() 值写错了，名字比对照样是绿的。
+  */
+  test('带耗材行的建单请求真的能通过校验', () => {
+    const { error } = createOrderSchema.validate({
+      orderType: 'TAKEOUT',
+      items: [
+        { itemId: '11111111-1111-4111-8111-111111111111', itemName: '招牌炒饭',
+          quantity: 1, unitPrice: 1280 },
+        // 耗材行：itemId 是 catalog_supplies.id
+        { itemId: '22222222-2222-4222-8222-222222222222', itemName: 'Bag',
+          quantity: 1, unitPrice: 25, isSupply: true, supplyOrigin: 'auto' },
+      ],
+    }, { abortEarly: false })
+    assert.equal(error, undefined,
+      `带耗材行的请求被拒了：${error?.details.map(d => d.message).join('; ')}`)
+  })
+
+  test('supplyOrigin 两个取值都放行（auto = 规则加的，selected = 员工加的）', () => {
+    for (const origin of ['auto', 'selected']) {
+      const { error } = createOrderSchema.validate({
+        orderType: 'TAKEOUT',
+        items: [{ itemId: '22222222-2222-4222-8222-222222222222', itemName: 'Bag',
+                  quantity: 1, unitPrice: 25, isSupply: true, supplyOrigin: origin }],
+      }, { abortEarly: false })
+      assert.equal(error, undefined, `supplyOrigin='${origin}' 被拒了`)
     }
   })
 
