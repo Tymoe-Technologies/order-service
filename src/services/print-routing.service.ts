@@ -7,6 +7,7 @@
 import prisma from '../utils/prisma';
 import { AppError } from '../middleware/errorHandler';
 import logger from '../utils/logger';
+import { parseAssignmentScope, assignmentScope } from './print-routing';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TICKET_TYPES = ['CUSTOMER_RECEIPT', 'KITCHEN_TICKET', 'ITEM_LABEL', 'CUSTOM_LABEL', 'DAILY_REPORT', 'SHIFT_REPORT'];
@@ -93,7 +94,7 @@ export async function replaceRoutingConfig(
       // 站没了，指向它的打印机归属也得清 —— 留着的话分发端查不到对应站，
       // 那条记录永远不会被命中，却会在设置界面里显示成一条有效绑定
       await tx.printerAssignment.deleteMany({
-        where: { tenantId, scope: { in: dropped.map((d: { id: string }) => `station:${d.id}`) } },
+        where: { tenantId, scope: { in: dropped.map((d: { id: string }) => assignmentScope({ stationId: d.id, ticketType: 'KITCHEN_TICKET' })) } },
       });
     }
 
@@ -149,15 +150,13 @@ export async function upsertAssignments(tenantId: string, input: AssignmentInput
 
   const stationIds = new Set<string>();
   for (const a of input) {
-    const m = /^station:(.+)$/.exec(a.scope || '') ;
-    if (m) {
-      if (!UUID_RE.test(m[1])) throw new AppError(400, 'INVALID_SCOPE', `scope 不合法: ${a.scope}`);
-      stationIds.add(m[1]);
-    } else {
-      const t = /^ticket:(.+)$/.exec(a.scope || '');
-      if (!t || !TICKET_TYPES.includes(t[1])) {
-        throw new AppError(400, 'INVALID_SCOPE', `scope 不合法: ${a.scope}`);
-      }
+    const parsed = parseAssignmentScope(a.scope);
+    if (!parsed) throw new AppError(400, 'INVALID_SCOPE', `scope 不合法: ${a.scope}`);
+    if (parsed.kind === 'station') {
+      if (!UUID_RE.test(parsed.stationId)) throw new AppError(400, 'INVALID_SCOPE', `scope 不合法: ${a.scope}`);
+      stationIds.add(parsed.stationId);
+    } else if (!TICKET_TYPES.includes(parsed.ticketType)) {
+      throw new AppError(400, 'INVALID_SCOPE', `scope 不合法: ${a.scope}`);
     }
     if (!a.deviceId || a.deviceId.length > 255) {
       throw new AppError(400, 'INVALID_DEVICE_ID', `deviceId 不合法: ${a.deviceId}`);

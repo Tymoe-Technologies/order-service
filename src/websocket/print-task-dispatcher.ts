@@ -7,6 +7,7 @@ import WebSocket from 'ws';
 import prisma from '../utils/prisma';
 import logger from '../utils/logger';
 import { deviceRegistry } from './device-registry';
+import { assignmentScope } from '../services/print-routing';
 import { sendMessage } from './ws-server';
 import type {
   PrintTaskPayloadForClient,
@@ -54,7 +55,7 @@ export async function dispatchPrintTasks(
     };
     const msg = { type: 'PRINT_TASK' as const, task: clientPayload, timestamp: new Date().toISOString() };
 
-    const scope = task.stationId ? `station:${task.stationId}` : `ticket:${task.ticketType}`;
+    const scope = assignmentScope(task);
     const assignment = byScope.get(scope);
 
     if (!assignment) {

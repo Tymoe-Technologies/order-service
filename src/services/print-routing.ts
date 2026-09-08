@@ -174,3 +174,23 @@ export function splitByStation<T extends RoutableLine>(
     };
   });
 }
+
+/**
+ * 打印职责的作用域键（PrinterAssignment.scope）。
+ *
+ * 分发端要按它查归属、设置端要按它写归属 —— 两边各写一遍字符串拼接的话，
+ * 一方改了另一方不知道，表现是**所有任务都查不到归属、静默退回广播**，
+ * 也就是重复出单又回来了，而日志上一切正常。所以只留一处。
+ */
+export const assignmentScope = (
+  target: { stationId?: string | null; ticketType: string },
+): string => (target.stationId ? `station:${target.stationId}` : `ticket:${target.ticketType}`);
+
+/** 反解，供设置界面和校验用 */
+export const parseAssignmentScope = (
+  scope: string,
+): { kind: 'station'; stationId: string } | { kind: 'ticket'; ticketType: string } | null => {
+  const m = /^(station|ticket):(.+)$/.exec(scope || '');
+  if (!m) return null;
+  return m[1] === 'station' ? { kind: 'station', stationId: m[2] } : { kind: 'ticket', ticketType: m[2] };
+};

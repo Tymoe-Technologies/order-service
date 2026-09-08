@@ -10,7 +10,10 @@
 
 import { test } from 'node:test';
 import assert from 'assert/strict';
-import { resolveStations, splitByStation, type RoutingStation, type RoutingRule } from './print-routing';
+import {
+  resolveStations, splitByStation, assignmentScope, parseAssignmentScope,
+  type RoutingStation, type RoutingRule,
+} from './print-routing';
 
 // 三个站：热菜(0) 冷菜(1) 打包台(2)，热菜是兜底
 const HOT: RoutingStation = { id: 's-hot', name: '热菜站', isDefault: true, isActive: true, sortOrder: 0 };
@@ -179,4 +182,32 @@ test('拆单：重复规则（同商品同站配了两条）不会让这行在�
   assert.equal(groups.length, 1);
   assert.deepEqual(groups[0].lines.map((l) => l.id), ['l1']);
   assert.deepEqual(groups[0].coStations, {});
+});
+
+// ── 打印职责的 scope 键 ─────────────────────────────────────
+// 分发端按它查归属、设置端按它写归属。两边不一致的表现是「所有任务都查不到
+// 归属、静默退回广播」= 重复出单又回来了，而日志上一切正常
+
+test('厨房单按站取 scope，其他票据按类型', () => {
+  assert.equal(assignmentScope({ stationId: 's-hot', ticketType: 'KITCHEN_TICKET' }), 'station:s-hot');
+  assert.equal(assignmentScope({ stationId: null, ticketType: 'CUSTOMER_RECEIPT' }), 'ticket:CUSTOMER_RECEIPT');
+  assert.equal(assignmentScope({ ticketType: 'ITEM_LABEL' }), 'ticket:ITEM_LABEL');
+});
+
+test('scope 能原样反解回去（分发端写的，设置端读得懂）', () => {
+  for (const t of [
+    { stationId: 'abc', ticketType: 'KITCHEN_TICKET' },
+    { stationId: null, ticketType: 'CUSTOMER_RECEIPT' },
+  ]) {
+    const parsed = parseAssignmentScope(assignmentScope(t));
+    assert.deepEqual(parsed, t.stationId
+      ? { kind: 'station', stationId: t.stationId }
+      : { kind: 'ticket', ticketType: t.ticketType });
+  }
+});
+
+test('反解认不出的 scope 返回 null，不当成合法值', () => {
+  for (const bad of ['', 'station', 'hot', 'printer:1', 'station:']) {
+    assert.equal(parseAssignmentScope(bad), null, `${JSON.stringify(bad)} 不该被认成合法 scope`);
+  }
 });
