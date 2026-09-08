@@ -110,6 +110,8 @@ async function notifyManualDiscount(params: {
 interface CreateOrderItem {
   itemId: string;
   itemName: string;
+  /// 分类快照，厨房单的分类级路由用（见 OrderItem.categoryId）
+  categoryId?: string | null;
   quantity: number;
   unitPrice: number;  // 含 modifiers，不含折扣
   
@@ -616,6 +618,7 @@ class OrderService {
           return {
             itemId: item.itemId,
             itemName: item.itemName,
+            categoryId: item.categoryId ?? null,   // 分类快照，厨房单路由用
             quantity: item.quantity,
             unitPrice: Math.round(item.unitPrice),  // 确保是整数（分）
             totalPrice: Math.round(totalPrice),  // 确保是整数（分）
@@ -2139,6 +2142,7 @@ class OrderService {
                 return {
                   itemId: item.itemId,
                   itemName: item.itemName,
+                  categoryId: item.categoryId ?? null,   // 分类快照，厨房单路由用
                   quantity: item.quantity,
                   unitPrice: parseInt(item.unitPrice, 10),
                   totalPrice: parseInt(item.unitPrice, 10) * item.quantity,

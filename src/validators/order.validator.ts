@@ -29,6 +29,9 @@ export const createOrderSchema = Joi.object({
       Joi.object({
         itemId: Joi.string().uuid().required(),
         itemName: Joi.string().max(255).required(),
+        // 分类快照，厨房单的分类级路由靠它（见 OrderItem.categoryId）。
+        // 不放行的话 Joi 直接 400，POS 传了也进不来
+        categoryId: Joi.string().uuid().optional().allow(null),
         quantity: Joi.number().integer().min(1).required(),
         unitPrice: Joi.number().integer().min(0).required(),  // 单价（分，整数）
         

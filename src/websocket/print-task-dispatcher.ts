@@ -17,8 +17,16 @@ import type {
 } from './types';
 
 /**
- * 分发打印任务到在线设备
- * 如果没有在线设备，任务保持 PENDING，等设备重连后通过 FETCH_PENDING 拉取
+ * 分发打印任务到在线设备。
+ *
+ * **定向推送**：任务按 PrinterAssignment 找到负责的设备，只推给它。
+ * 原来是「向全店在线设备广播 + 客户端各自去重」，而去重键在各自的 localStorage 里、
+ * 互相不知道 —— 多台 POS 在线时同一张单会被打多份。
+ *
+ * 没配归属的任务退回广播（升级期间必须保留：归属记录要等 POS 设置界面
+ * 上报才有，那之前一条都没有，切断广播等于全店停印）。
+ *
+ * 没有可推的设备时任务保持 PENDING，等设备重连后通过 FETCH_PENDING 拉取。
  */
 export async function dispatchPrintTasks(
   tasks: any[],
@@ -26,19 +34,13 @@ export async function dispatchPrintTasks(
 ): Promise<void> {
   if (tasks.length === 0) return;
 
-  // 获取该门店的在线设备
-  const devices = deviceRegistry.getDevicesByStore(tenantId);
+  const assignments = await prisma.printerAssignment.findMany({ where: { tenantId } });
+  const byScope = new Map(assignments.map((a) => [a.scope, a]));
 
-  if (devices.length === 0) {
-    logger.info('[Dispatcher] 无在线设备，任务保持 PENDING 等待拉取', {
-      tenantId,
-      taskCount: tasks.length,
-    });
-    return;
-  }
-
-  // 向所有在线设备广播打印任务（由客户端去重）
-  const sentTaskIds: string[] = [];
+  // taskId -> 推给了哪台设备（null = 广播，不绑定设备）
+  const sent = new Map<string, string | null>();
+  const stranded: Array<{ taskId: string; scope: string; deviceId: string }> = [];
+  let broadcastCount = 0;
 
   for (const task of tasks) {
     const clientPayload: PrintTaskPayloadForClient = {
@@ -50,44 +52,65 @@ export async function dispatchPrintTasks(
       payload: task.payload,
       createdAt: task.createdAt instanceof Date ? task.createdAt.toISOString() : task.createdAt,
     };
+    const msg = { type: 'PRINT_TASK' as const, task: clientPayload, timestamp: new Date().toISOString() };
 
-    let sent = false;
-    for (const device of devices) {
-      if (device.ws.readyState === WebSocket.OPEN) {
-        const success = sendMessage(device.ws, {
-          type: 'PRINT_TASK',
-          task: clientPayload,
-          timestamp: new Date().toISOString(),
-        });
-        if (success) {
-          sent = true;
-        }
+    const scope = task.stationId ? `station:${task.stationId}` : `ticket:${task.ticketType}`;
+    const assignment = byScope.get(scope);
+
+    if (!assignment) {
+      // 未登记归属：退回广播
+      const devices = deviceRegistry.getDevicesByStore(tenantId);
+      let ok = false;
+      for (const device of devices) {
+        if (device.ws.readyState === WebSocket.OPEN && sendMessage(device.ws, msg)) ok = true;
       }
+      if (ok) {
+        sent.set(task.id, null);
+        broadcastCount++;
+      }
+      continue;
     }
 
-    if (sent) {
-      sentTaskIds.push(task.id);
+    // 主责 → fallback，都不在线就留 PENDING 并告警
+    const target = [assignment.deviceId, assignment.fallbackDeviceId]
+      .filter((d): d is string => !!d)
+      .map((d) => deviceRegistry.getDevice(d))
+      .find((d) => d && d.ws.readyState === WebSocket.OPEN);
+
+    if (!target) {
+      stranded.push({ taskId: task.id, scope, deviceId: assignment.deviceId });
+      continue;
     }
+    if (sendMessage(target.ws, msg)) sent.set(task.id, target.deviceId);
+    else stranded.push({ taskId: task.id, scope, deviceId: assignment.deviceId });
   }
 
-  // 批量更新已发送的任务状态
-  if (sentTaskIds.length > 0) {
+  // 按目标设备分组更新，broadcast 的那批 deviceId 留空
+  const groups = new Map<string | null, string[]>();
+  for (const [taskId, deviceId] of sent) {
+    const bucket = groups.get(deviceId);
+    if (bucket) bucket.push(taskId);
+    else groups.set(deviceId, [taskId]);
+  }
+  for (const [deviceId, taskIds] of groups) {
     await prisma.printTask.updateMany({
-      where: { id: { in: sentTaskIds } },
-      data: {
-        status: 'SENT',
-        sentAt: new Date(),
-        // 广播模式不绑定特定 deviceId
-      },
-    });
-
-    logger.info('[Dispatcher] 打印任务已推送', {
-      tenantId,
-      sentCount: sentTaskIds.length,
-      totalTasks: tasks.length,
-      deviceCount: devices.length,
+      where: { id: { in: taskIds } },
+      data: { status: 'SENT', sentAt: new Date(), ...(deviceId ? { deviceId } : {}) },
     });
   }
+
+  if (stranded.length > 0) {
+    // 收银员看得见的告警靠状态面板（Phase C）读 PENDING 任务，这里先留日志
+    logger.warn('[Dispatcher] 负责设备离线，任务留 PENDING', { tenantId, stranded });
+  }
+
+  logger.info('[Dispatcher] 打印任务已推送', {
+    tenantId,
+    totalTasks: tasks.length,
+    targetedCount: sent.size - broadcastCount,
+    broadcastCount,
+    strandedCount: stranded.length,
+  });
 }
 
 /**

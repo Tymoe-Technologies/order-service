@@ -92,6 +92,13 @@ class DeviceRegistry {
   }
 
   /**
+   * 按设备码查找（定向推送打印任务用）
+   */
+  getDevice(deviceId: string): ConnectedDevice | undefined {
+    return this.deviceMap.get(deviceId);
+  }
+
+  /**
    * 按 WebSocket 引用查找设备
    */
   getDeviceByWs(ws: WebSocket): ConnectedDevice | undefined {
