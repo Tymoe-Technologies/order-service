@@ -17,6 +17,7 @@
 import prisma from '../utils/prisma';
 import logger from '../utils/logger';
 import type { PrintTaskSource } from './types';
+import { splitByStation, type RoutingStation, type RoutingRule } from '../services/print-routing';
 
 // OrderSource -> PrintTaskSource 映射
 const SOURCE_MAP: Record<string, PrintTaskSource> = {
@@ -58,6 +59,8 @@ interface OrderWithItems {
   createdAt: Date;
   orderItems: Array<{
     id: string;
+    itemId: string;
+    categoryId?: string | null;
     itemName: string;
     quantity: number;
     unitPrice: number;
@@ -105,6 +108,10 @@ export async function generatePrintTasksForOrder(
   }
 
   const source = SOURCE_MAP[clientOrigin] || 'POS';
+  // 备餐站配置只在真要出厨房单时查，省掉一次往返
+  const routing = printSettings.some((s) => s.ticketType === 'KITCHEN_TICKET')
+    ? await loadRoutingConfig(tenantId)
+    : null;
   const tasks: any[] = [];
   // 标签任务序号：用于生成唯一递增的 priority，保证 ITEM_LABEL 与 CUSTOM_LABEL 交错打印
   // PostgreSQL 同一事务内 createdAt 相同，不能依赖 createdAt 排序，必须用 priority 区分
@@ -159,8 +166,32 @@ export async function generatePrintTasksForOrder(
           }
         }
       }
+    } else if (ticketType === 'KITCHEN_TICKET') {
+      // 厨房单：按备餐站拆成多张，每张只印属于该站的商品
+      const groups = splitByStation(order.orderItems, routing?.stations || [], routing?.rules || []);
+      for (const g of groups) {
+        tasks.push({
+          tenantId,
+          orderId: order.id,
+          ticketType,
+          stationId: g.stationId,
+          source,
+          priority: PRIORITY_MAP[ticketType],
+          payload: {
+            orderData: order,
+            station: g.stationId ? { id: g.stationId, name: g.stationName } : null,
+            // 只带行 id，不复制商品对象 —— orderData 里已经有全量，
+            // 复制一份会让 payload 随站数翻倍，而且两份数据早晚会不一致
+            lineIds: g.lines.map((l) => l.id),
+            stationIndex: g.stationIndex,
+            stationTotal: g.stationTotal,
+            coStations: g.coStations,
+            unroutedLineIds: g.unroutedLineIds,
+          },
+        });
+      }
     } else {
-      // 收据和厨房单：每种类型一个任务
+      // 收据：一个任务
       tasks.push({
         tenantId,
         orderId: order.id,
@@ -188,7 +219,31 @@ export async function generatePrintTasksForOrder(
     orderNumber: order.orderNumber,
     count: createdTasks.length,
     types: createdTasks.map((t) => t.ticketType),
+    kitchenStations: createdTasks.filter((t) => t.stationId).length,
   });
 
   return createdTasks;
+}
+
+/**
+ * 读租户的备餐站与路由规则。
+ *
+ * 停用的站也读回来 —— 路由算法要靠 isActive 判断「规则指向的站已停用，
+ * 继续往下一级找」，在 SQL 里先滤掉的话它就只能看到「没有规则」，
+ * 两种情况的处置本来是一样的，但少了这个字段就没法在日志里区分。
+ */
+async function loadRoutingConfig(
+  tenantId: string,
+): Promise<{ stations: RoutingStation[]; rules: RoutingRule[] }> {
+  const [stations, rules] = await Promise.all([
+    prisma.printStation.findMany({
+      where: { tenantId },
+      select: { id: true, name: true, isDefault: true, isActive: true, sortOrder: true },
+    }),
+    prisma.printRoute.findMany({
+      where: { tenantId },
+      select: { stationId: true, matchType: true, matchId: true },
+    }),
+  ]);
+  return { stations, rules };
 }

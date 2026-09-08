@@ -205,6 +205,15 @@ model OrderItem {
   // 商品行 = catalog_items.id；耗材行 = catalog_supplies.id（看 lineKind 区分）
   itemId         String  @map("item_id") @db.Uuid
   itemName       String  @map("item_name") @db.VarChar(255)
+
+  /// 下单时的分类快照。**厨房单的分类级路由靠它**（PrintRoute matchType=CATEGORY）。
+  ///
+  /// 为什么要落库而不是打印时去 item-management 查：一是把网络依赖加到出单路径上，
+  /// item-management 挂了厨房就停摆；二是商品改分类后，历史单的归属会跟着变。
+  /// 和 itemName/unitPrice 同理 —— 订单行本来就是快照。
+  ///
+  /// 存量行为 null，只按商品级规则和兜底站路由（那些单早就打完了）
+  categoryId     String? @map("category_id") @db.Uuid
   quantity       Int
   unitPrice      Int     @map("unit_price")    // 单价（分 cents）
   totalPrice     Int     @map("total_price")   // 总价（分 cents）
@@ -626,6 +635,16 @@ model PrintTask {
   tenantId     String          @map("tenant_id") @db.Uuid
   orderId      String          @map("order_id") @db.Uuid
   ticketType   TicketType      @map("ticket_type")
+
+  /// 厨房单专用：这张单属于哪个备餐站。
+  /// 一单会按商品路由拆成多张厨房单，每张只印属于该站的商品。
+  /// 非厨房票据（收据/标签）为 null
+  stationId    String?         @map("station_id") @db.Uuid
+
+  /// 客户端发号。POS 本机打印时自己生成 id，打完补报，后端按它幂等 ——
+  /// 没有它的话「本地先打 + 网络恢复后补报」会让后端再生成一遍任务、重复出单。
+  /// 跟订单主键同一个模式（见 POS 的 client-generated-order-id）
+  clientTaskId String?         @map("client_task_id") @db.VarChar(64)
   source       PrintTaskSource
   priority     Int             @default(2)           // 0=紧急, 1=厨房单, 2=收据, 3=标签
   status       PrintTaskStatus @default(PENDING)
@@ -646,7 +665,9 @@ model PrintTask {
 
   order        Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
+  @@unique([tenantId, clientTaskId])
   @@index([tenantId, status])
+  @@index([tenantId, stationId])
   @@index([orderId])
   @@index([deviceId, status])
   @@map("print_tasks")
@@ -681,6 +702,116 @@ model PrintSetting {
   @@unique([tenantId, ticketType])
   @@index([tenantId])
   @@map("print_settings")
+}
+
+// ========== 备餐站与打印路由 ==========
+// 设计依据见 POS 仓库的 docs/architecture/PRINT_ARCHITECTURE.md
+
+/// 备餐站（热菜 / 冷菜 / 饮品吧 / 打包台）。
+///
+/// **商品不直接绑打印机，而是绑「站」。** 多这一层间接是必要的 ——
+/// 打印机会坏会换会加，但「热菜站」这个概念不变；而且同一个站在不同
+/// 门店/不同 POS 上可能对应不同的物理设备（那部分是 POS 本地配置）。
+model PrintStation {
+  /// 库端生成 id / updated_at 默认值，理由见 MerchantFulfillmentOption
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  name      String   @db.VarChar(64)
+
+  /// 兜底站：没匹配到任何路由的商品进这里。**每租户恰好一个。**
+  ///
+  /// 没有它的话，商家新加的菜不属于任何站 → 谁都收不到 → 那道菜永远不会被做。
+  /// 而这种配置缺失可以隐藏几个月（每次只影响那一个新菜），
+  /// 所以它不是「保险」，是必需品。走兜底的商品会在单据上印醒目标记。
+  isDefault Boolean  @default(false) @map("is_default")
+  isActive  Boolean  @default(true)  @map("is_active")
+  sortOrder Int      @default(0)     @map("sort_order")
+
+  /// 这个站的厨房单渲染配置（形状同 KitchenTicketConfig）。
+  /// 放这里而不是 PrintSetting，因为后者有 @@unique([tenantId, ticketType])，
+  /// 表达不了「多个站各有自己的版式」
+  config    Json?    @db.Json
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @default(now()) @map("updated_at")
+
+  routes    PrintRoute[]
+
+  @@index([tenantId])
+  @@map("print_stations")
+}
+
+enum RouteMatchType {
+  ITEM      // 商品级，优先级最高
+  CATEGORY  // 分类级
+}
+
+/// 路由规则：商品或分类 → 站。
+///
+/// 同一个 (matchType, matchId) 可以有多条记录，也就是**一个商品进多个站**
+/// （协作出单，比如奶茶要制茶站做、打包台装袋）。那时每张站单都印全量，
+/// 并互相标注「同时在：X 站」—— 否则两个站都以为自己做完就完事了。
+model PrintRoute {
+  id        String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String         @map("tenant_id") @db.Uuid
+  stationId String         @map("station_id") @db.Uuid
+  matchType RouteMatchType @map("match_type")
+  /// itemId 或 categoryId —— 对 item-management 的跨服务弱引用，
+  /// 和 order_items.itemId 是同一种既有模式
+  matchId   String         @map("match_id") @db.Uuid
+
+  /// 预留：PRIMARY（主责，出全量）/ NOTIFY（仅知会）。
+  /// **当前一律 PRIMARY**。取舍记录见架构文档 §5.2 ——
+  /// 「哪个站是主责」很难让商家配对，而配错了比不配更糟。
+  /// 字段先占位，免得日后加要迁移
+  role      String         @default("PRIMARY") @db.VarChar(16)
+
+  createdAt DateTime       @default(now()) @map("created_at")
+
+  station   PrintStation   @relation(fields: [stationId], references: [id], onDelete: Cascade)
+
+  /// 同一个商品到同一个站只能有一条规则
+  @@unique([tenantId, matchType, matchId, stationId])
+  @@index([tenantId, matchType, matchId])
+  @@map("print_routes")
+}
+
+/// 打印职责：哪台设备负责打哪个站 / 哪种票据。
+///
+/// **这张表是「多 POS + 手持设备」问题的答案。** 手持自己没有打印机，
+/// 它下单后由谁来打？纯 POS 本地配置回答不了 —— 必须有一个全店可见的归属登记，
+/// 服务端才能把任务**定向**推给正确的设备。
+///
+/// 现状是向全店在线设备广播、靠客户端各自去重，而去重键在各自的本地存储里、
+/// 互相不知道 —— 多台 POS 在线时同一张单会被打多份。
+model PrinterAssignment {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId         String   @map("tenant_id") @db.Uuid
+
+  /// 打什么。两种取值：
+  ///   `station:<stationId>`  —— 某个备餐站的厨房单
+  ///   `ticket:<TicketType>`  —— 某类非厨房票据（`ticket:CUSTOMER_RECEIPT`）
+  ///
+  /// 为什么合成一个字符串，而不是 stationId + ticketType 两个可空列：
+  /// Postgres 的唯一索引把 NULL 当互不相等，`@@unique([tenantId, stationId, ticketType])`
+  /// 在 station_id IS NULL 时压根不生效 —— 同一种票据能插进两条归属记录，
+  /// 于是**两台机器都收到任务、同一张单打两份**，正是这次要消灭的 bug。
+  /// 正解是部分唯一索引，但 Prisma 表达不了、`db push` 会把它删掉（见 migrations-manual/README）。
+  /// 合成键让约束落在 Prisma 能表达的范围内。
+  scope            String   @db.VarChar(80)
+
+  /// 主责设备。用 POS 的设备码（auth-service 分配的那个），
+  /// 不用 WS 连接 id —— 后者每次重连都变
+  deviceId         String   @map("device_id") @db.VarChar(255)
+  /// 主责离线时转推这台。为空 = 任务留队列等主责回来 + 告警
+  fallbackDeviceId String?  @map("fallback_device_id") @db.VarChar(255)
+
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @default(now()) @map("updated_at")
+
+  @@unique([tenantId, scope])
+  @@index([tenantId])
+  @@map("printer_assignments")
 }
 
 // 商家在线点单配置
