@@ -158,8 +158,9 @@ test('拆单：一个站都没配时退回全单一张（等于升级前的行�
     [groups[0].stationId, groups[0].stationIndex, groups[0].stationTotal, groups[0].lines.map((l) => l.id)],
     [null, 1, 1, ['l1', 'l2']],
   );
-  // 全部标 unrouted：单据上会有 ⚠，商家才会去配站
-  assert.deepEqual(groups[0].unroutedLineIds, ['l1', 'l2']);
+  // 不逐行标 ⚠ —— stationId=null 已经是「整单没配站」的信号，
+  // 每行都标等于一整张单全是警告，没人会去看
+  assert.deepEqual(groups[0].unroutedLineIds, []);
 });
 
 test('拆单：所有站都停用时也退回全单一张，不能一张都不出', () => {

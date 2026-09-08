@@ -121,13 +121,17 @@ export function splitByStation<T extends RoutableLine>(
   // 那也得把单打出来，只是印不出站名
   if (active.length === 0) {
     return [{
+      // null 就是「整单没有站配置」这个信号本身，单据抬头要印出来。
+      // unroutedLineIds 留空不是漏了：那个字段是给「站配了、但这个商品没归到任何站」
+      // 用的，逐行标 ⚠ 的前提是别的行没问题。整单都没配的时候每行都标，
+      // 等于一整张单全是警告 —— 没人会去看
       stationId: null,
       stationName: '',
       lines,
       stationIndex: 1,
       stationTotal: 1,
       coStations: {},
-      unroutedLineIds: lines.map((l) => l.id),
+      unroutedLineIds: [],
     }];
   }
 
