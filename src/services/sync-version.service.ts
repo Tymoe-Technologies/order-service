@@ -60,17 +60,42 @@ export async function getPrintSettingVersion(tenantId: string): Promise<string> 
   return shape(agg._count._all, agg._max.updatedAt);
 }
 
+/**
+ * 备餐站路由版本（站 + 规则 + 打印机归属）。
+ *
+ * 三张表合成一个版本号，因为 POS 是**整份一起用**的：拆单要站和规则，
+ * 判断「本机负责哪些站」要归属。分开三个版本号只会让引擎多两次比较，
+ * 而任何一张变了都得重拉那一整份。
+ *
+ * `PrintRoute` 没有 `updatedAt`（规则是删了重建，不存在原地修改），
+ * 所以用 `createdAt`；count 照旧覆盖删除。
+ */
+export async function getPrintRoutingVersion(tenantId: string): Promise<string> {
+  const [stations, routes, assignments] = await Promise.all([
+    prisma.printStation.aggregate({ where: { tenantId }, _count: { _all: true }, _max: { updatedAt: true } }),
+    prisma.printRoute.aggregate({ where: { tenantId }, _count: { _all: true }, _max: { createdAt: true } }),
+    prisma.printerAssignment.aggregate({ where: { tenantId }, _count: { _all: true }, _max: { updatedAt: true } }),
+  ]);
+  return [
+    shape(stations._count._all, stations._max.updatedAt),
+    shape(routes._count._all, routes._max.createdAt),
+    shape(assignments._count._all, assignments._max.updatedAt),
+  ].join('|');
+}
+
 export interface PosSyncVersions {
   channelVersion: string;
   printSettingVersion: string;
+  printRoutingVersion: string;
   serverTime: string;
 }
 
-/** 两个聚合并行 —— 互不依赖，串行只是白等一个往返 */
+/** 聚合并行 —— 互不依赖，串行只是白等往返 */
 export async function getPosSyncVersions(tenantId: string): Promise<PosSyncVersions> {
-  const [channelVersion, printSettingVersion] = await Promise.all([
+  const [channelVersion, printSettingVersion, printRoutingVersion] = await Promise.all([
     getChannelVersion(tenantId),
     getPrintSettingVersion(tenantId),
+    getPrintRoutingVersion(tenantId),
   ]);
-  return { channelVersion, printSettingVersion, serverTime: new Date().toISOString() };
+  return { channelVersion, printSettingVersion, printRoutingVersion, serverTime: new Date().toISOString() };
 }
