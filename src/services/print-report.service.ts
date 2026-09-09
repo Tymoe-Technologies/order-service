@@ -22,7 +22,7 @@ import prisma from '../utils/prisma';
 import logger from '../utils/logger';
 import { AppError } from '../middleware/errorHandler';
 
-const TICKET_TYPES = ['CUSTOMER_RECEIPT', 'KITCHEN_TICKET', 'ITEM_LABEL', 'CUSTOM_LABEL', 'DAILY_REPORT', 'SHIFT_REPORT'] as const;
+const TICKET_TYPES = ['CUSTOMER_RECEIPT', 'KITCHEN_TICKET', 'ITEM_LABEL', 'CUSTOM_LABEL'] as const;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** 票据类型 → PrintRecord.printType。报表类不落 PrintRecord（它是按订单挂的） */

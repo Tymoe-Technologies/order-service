@@ -77,7 +77,7 @@ export interface WSPendingTasksMessage extends WSMessage {
 
 // ========== 打印任务（发送给客户端的格式） ==========
 
-export type TicketType = 'CUSTOMER_RECEIPT' | 'KITCHEN_TICKET' | 'ITEM_LABEL' | 'CUSTOM_LABEL' | 'DAILY_REPORT' | 'SHIFT_REPORT';
+export type TicketType = 'CUSTOMER_RECEIPT' | 'KITCHEN_TICKET' | 'ITEM_LABEL' | 'CUSTOM_LABEL';
 export type PrintTaskSource = 'POS' | 'ONLINE' | 'KIOSK';
 
 // 发送给 POS 客户端的打印任务格式
