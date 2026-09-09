@@ -25,16 +25,25 @@ function deepMergeDefaults(defaults: Record<string, any>, existing: Record<strin
   return result;
 }
 
-// 票据类型枚举
-type TicketType = 'CUSTOMER_RECEIPT' | 'KITCHEN_TICKET' | 'ITEM_LABEL' | 'DAILY_REPORT' | 'SHIFT_REPORT';
+/*
+  票据类型枚举。
 
-// 票据类型元信息
+  **DAILY_REPORT / SHIFT_REPORT 已下线**（2026-09-09）：它们的 config
+  （showTopItems、topItemsCount 之类）**从来没有任何读取方** ——
+  POS 的 `printSalesReport` 是固定版式，读的是 CUSTOMER_RECEIPT 的店铺信息、
+  打到收据打印机上。所以后台那两页配置是配了不生效。
+
+  Prisma 的 TicketType 枚举里仍然保留这两个值：`print_records.printType`
+  用的是同一套枚举，而且存量租户已经有这两行（都是 disabled）。
+  这里只是不再为新租户生成、也不再对外声明它们可配。
+*/
+type TicketType = 'CUSTOMER_RECEIPT' | 'KITCHEN_TICKET' | 'ITEM_LABEL';
+
+// 票据类型元信息。initialize 和 /print-settings/meta 都由它驱动
 const TICKET_TYPE_META: Record<TicketType, { name: string; protocol: string; defaultCopies: number; defaultEnabled: boolean }> = {
   CUSTOMER_RECEIPT: { name: '客户收据', protocol: 'ESCPOS', defaultCopies: 1, defaultEnabled: true },
   KITCHEN_TICKET: { name: '厨房菜品单', protocol: 'ESCPOS', defaultCopies: 1, defaultEnabled: false },
   ITEM_LABEL: { name: '标签贴纸', protocol: 'TSPL', defaultCopies: 1, defaultEnabled: false },
-  DAILY_REPORT: { name: '日结报表', protocol: 'ESCPOS', defaultCopies: 1, defaultEnabled: false },
-  SHIFT_REPORT: { name: '交接班单', protocol: 'ESCPOS', defaultCopies: 1, defaultEnabled: false },
 };
 
 // 各票据类型的默认配置
@@ -96,34 +105,6 @@ function getDefaultConfig(ticketType: TicketType): object {
         },
       };
 
-    case 'DAILY_REPORT':
-      return {
-        paperWidth: 80,
-        language: 'zh-CN',
-        sections: {
-          showOrderSummary: true,
-          showRevenueBreakdown: true,
-          showPaymentBreakdown: true,
-          showRefundSummary: true,
-          showTopItems: true,
-          topItemsCount: 10,
-          showCategoryBreakdown: false,
-        },
-      };
-
-    case 'SHIFT_REPORT':
-      return {
-        paperWidth: 80,
-        language: 'zh-CN',
-        sections: {
-          showCashierInfo: true,
-          showShiftTime: true,
-          showOrderSummary: true,
-          showRevenueBreakdown: true,
-          showPaymentBreakdown: true,
-          showCashDrawer: true,
-        },
-      };
   }
 }
 

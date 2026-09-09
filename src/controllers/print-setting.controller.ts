@@ -5,6 +5,11 @@ import { successResponse } from '../utils/response';
 import logger from '../utils/logger';
 import CloudinaryService from '../services/cloudinary.service';
 
+/*
+  可配置的票据类型。DAILY_REPORT / SHIFT_REPORT 已下线 ——
+  它们的 config 从来没有读取方（见 print-setting.service 的说明）。
+  仍然放行是为了让存量租户那两行能被读/改（比如关掉），只是后台不再提供入口。
+*/
 const VALID_TICKET_TYPES = ['CUSTOMER_RECEIPT', 'KITCHEN_TICKET', 'ITEM_LABEL', 'DAILY_REPORT', 'SHIFT_REPORT'];
 
 export class PrintSettingController {
