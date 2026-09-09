@@ -20,6 +20,7 @@ import type {
   WSFetchPendingMessage,
   PrintTaskPayloadForClient,
 } from './types';
+import { taskToClientPayload } from './print-task-payload';
 
 let wss: WebSocketServer | null = null;
 
@@ -437,17 +438,3 @@ async function verifyToken(token: string, expectedStoreId: string): Promise<void
   }
 }
 
-/**
- * 将数据库 PrintTask 转换为客户端格式
- */
-function taskToClientPayload(task: any): PrintTaskPayloadForClient {
-  return {
-    id: task.id,
-    orderId: task.orderId,
-    ticketType: task.ticketType,
-    source: task.source,
-    priority: task.priority,
-    payload: task.payload as any,
-    createdAt: task.createdAt.toISOString(),
-  };
-}
