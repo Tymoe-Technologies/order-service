@@ -32,15 +32,26 @@ function isValidMerchantId(merchantId: string): boolean {
  */
 export async function validateMerchantId(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    // 跳过不需要 X-Merchant-Id 头的路径
-    // 这些路径使用 URL 路径参数中的 merchantId 或者是服务间调用
+    /*
+      跳过不需要 X-Merchant-Id 头的路径：这些路径用 URL 参数里的 merchantId、
+      走 JWT 认证，或者是服务间调用。
+
+      ⚠️ **这是一份白名单，每加一个走 JWT 认证的新路由前缀都必须补进来。**
+      忘了的后果不是「少了个头」，而是那条路由**整个 400**，而且报的是
+      `MISSING_MERCHANT_ID` —— 看起来像客户端漏传请求头，实际上路由压根没被执行到。
+      已经栽过一次：print-routing / print-results 上线后 POS 一直显示「后端不在线」。
+      有个单测在盯这件事，见 routes/merchant-id-skip.test.ts。
+    */
     const skipPaths = [
       /^\/merchants\/[^/]+\/items$/,  // 商品代理端点
       /^\/orders\/[^/]+\/payment-status$/,  // 订单支付状态更新（Finance Service 服务间调用）
 /^\/sales-channels/,  // 销售渠道接口（使用 JWT 认证）
+      /^\/sync/,           // POS 同步版本号（使用 JWT 认证）
       /^\/statistics/,  // 统计接口（使用 JWT 认证）
       /^\/print-settings/,  // 打印设置接口（使用 JWT 认证）
       /^\/print-brand/,     // 品牌配置接口（使用 JWT 认证）
+      /^\/print-routing/,  // 备餐站与打印路由（使用 JWT 认证）
+      /^\/print-results/,  // POS 本机打印结果补报（使用 JWT 认证）
       /^\/receipt-templates/, // 票据模板接口（使用 JWT 认证）
       /^\/public\//,           // 公开端点（前端直接访问，无需 X-Merchant-Id）
       /^\/consumer\//,         // 消费者端点（Consumer JWT 认证，无需 X-Merchant-Id）
