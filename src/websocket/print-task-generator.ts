@@ -19,6 +19,33 @@ import logger from '../utils/logger';
 import type { PrintTaskSource } from './types';
 import { splitByStation, type RoutingStation, type RoutingRule } from '../services/print-routing';
 
+/**
+ * 这一行是耗材还是真商品。
+ *
+ * 耗材（餐具 / 购物袋 / 打包费）作为独立订单行存在同一张 order_items 里
+ * （见 OrderItem.lineKind 的说明），好处是小票、退款、计税全都复用商品行
+ * 那套逻辑；代价是**每个「按商品」的口径都得记得排除它**。
+ * 漏掉的表现是静默的：每个购物袋各出一张标签、厨房单上出现「1× 打包费」。
+ */
+const isSupplyLine = (line: { lineKind?: string }): boolean => line.lineKind === 'SUPPLY';
+
+/**
+ * 要出标签的行 + 它们在**原数组**里的下标。
+ *
+ * 下标必须是原数组的：payload 里只带 `itemIndex`，客户端是拿
+ * `orderData.orderItems[itemIndex]` 取回那一行的。用过滤后的下标会
+ * **取到错误的商品** —— 标签上印着别的菜名，而这种错没有任何报错。
+ *
+ * 导出只为单测。
+ */
+export function labelLinesWithIndex<T extends { lineKind?: string; quantity: number }>(
+  orderItems: T[],
+): Array<{ item: T; index: number }> {
+  return orderItems
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => !isSupplyLine(item));
+}
+
 // OrderSource -> PrintTaskSource 映射
 const SOURCE_MAP: Record<string, PrintTaskSource> = {
   POS: 'POS',
@@ -60,6 +87,8 @@ interface OrderWithItems {
   orderItems: Array<{
     id: string;
     itemId: string;
+    /** PRODUCT | SUPPLY。耗材（餐具/购物袋/打包费）不出标签、不上厨房单 */
+    lineKind?: string;
     categoryId?: string | null;
     itemName: string;
     quantity: number;
@@ -123,12 +152,20 @@ export async function generatePrintTasksForOrder(
     const ticketType = setting.ticketType;
 
     if (ticketType === 'ITEM_LABEL') {
-      // 全单总标签数（所有商品数量之和）
-      const totalLabels = order.orderItems.reduce((sum, it) => sum + it.quantity, 0);
+      /*
+        全单总标签数。**只数真商品** —— 耗材（餐具/购物袋/打包费）以
+        `lineKind='SUPPLY'` 存在同一张 order_items 里，不排除的话
+        每个购物袋会各出一张标签，「第 X / 共 Y 杯」的分母也被撑大。
+
+        `itemIndex` 仍然是**原数组的下标**：payload 里只带下标，
+        客户端拿 `orderData.orderItems[itemIndex]` 取回那一行。
+        改成过滤后的下标会取到错误的商品。
+      */
+      const labelIdx = labelLinesWithIndex(order.orderItems);
+      const totalLabels = labelIdx.reduce((sum, { item }) => sum + item.quantity, 0);
       let globalSeq = 0;
 
-      for (let i = 0; i < order.orderItems.length; i++) {
-        const item = order.orderItems[i];
+      for (const { item, index: i } of labelIdx) {
         for (let q = 0; q < item.quantity; q++) {
           globalSeq++;
           // 每张 item label 使用偶数 priority slot
@@ -168,7 +205,16 @@ export async function generatePrintTasksForOrder(
       }
     } else if (ticketType === 'KITCHEN_TICKET') {
       // 厨房单：按备餐站拆成多张，每张只印属于该站的商品
-      const groups = splitByStation(order.orderItems, routing?.stations || [], routing?.rules || []);
+      /*
+        耗材不参与路由 —— 厨房不做打包费。
+        （客户端渲染时也会再滤一次，两边都做是因为**任一端漏掉都会印出来**，
+        而这一端滤掉还能少生成任务。）
+      */
+      const groups = splitByStation(
+        order.orderItems.filter((it) => !isSupplyLine(it)),
+        routing?.stations || [],
+        routing?.rules || [],
+      );
       for (const g of groups) {
         tasks.push({
           tenantId,
