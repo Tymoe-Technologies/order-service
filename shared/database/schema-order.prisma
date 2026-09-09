@@ -644,7 +644,11 @@ model PrintTask {
   /// 客户端发号。POS 本机打印时自己生成 id，打完补报，后端按它幂等 ——
   /// 没有它的话「本地先打 + 网络恢复后补报」会让后端再生成一遍任务、重复出单。
   /// 跟订单主键同一个模式（见 POS 的 client-generated-order-id）
-  clientTaskId String?         @map("client_task_id") @db.VarChar(64)
+  ///
+  /// 长度 128 而不是 64：POS 的 id 形如 `<orderId>:<ticketType>:<stationId>`，
+  /// 两个 uuid 加票据类型就 88 个字符了。原来定的 64 装不下厨房单那一类 ——
+  /// 而那正是最需要补报的一类（一单多张、最容易少一张）。
+  clientTaskId String?         @map("client_task_id") @db.VarChar(128)
   source       PrintTaskSource
   priority     Int             @default(2)           // 0=紧急, 1=厨房单, 2=收据, 3=标签
   status       PrintTaskStatus @default(PENDING)

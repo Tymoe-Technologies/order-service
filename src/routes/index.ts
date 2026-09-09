@@ -14,6 +14,7 @@ import checkoutSnapshotRoutes from './checkout-snapshot.routes';
 import printSettingRoutes from './print-setting.routes';
 import printBrandRoutes from './print-brand.routes';
 import printRoutingRoutes from './print-routing.routes';
+import printReportRoutes from './print-report.routes';
 import receiptTemplateRoutes from './receipt-template.routes';
 
 const router = Router();
@@ -42,6 +43,7 @@ router.use('/', itemProxyRoutes);
 router.use('/print-settings', printSettingRoutes);
 router.use('/print-brand', printBrandRoutes);
 router.use('/print-routing', printRoutingRoutes);
+router.use('/print-results', printReportRoutes);
 router.use('/receipt-templates', receiptTemplateRoutes);
 
 // ========== Checkout Snapshot 端点（公开，无需认证） ==========
