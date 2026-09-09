@@ -810,6 +810,15 @@ model PrinterAssignment {
   /// 主责离线时转推这台。为空 = 任务留队列等主责回来 + 告警
   fallbackDeviceId String?  @map("fallback_device_id") @db.VarChar(255)
 
+  /// 主责设备的名字，登记时由那台设备自己带上来（和 finance-service 的
+  /// CashDrawerBinding.deviceName 同一个做法）。
+  ///
+  /// 冗余存一份而不是按 deviceId 去查：别的设备**只拿得到设备码**
+  /// （`kklhbb2y8` 这种），而设置界面要告诉商家「饮品吧这个站已经由
+  /// 『吧台机』负责了」—— 一串码对商家等于没说。
+  /// 为空就退回显示设备码前 8 位（存量记录都是空的）。
+  deviceName       String?  @map("device_name") @db.VarChar(120)
+
   createdAt        DateTime @default(now()) @map("created_at")
   updatedAt        DateTime @updatedAt @default(now()) @map("updated_at")
 

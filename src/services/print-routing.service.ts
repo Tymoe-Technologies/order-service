@@ -38,6 +38,8 @@ export interface AssignmentInput {
   scope: string;
   deviceId: string;
   fallbackDeviceId?: string | null;
+  /** 这台设备的名字，由它自己带上来（别台 POS 只拿得到设备码，见 schema 的说明） */
+  deviceName?: string | null;
 }
 
 export async function getRoutingConfig(tenantId: string) {
@@ -161,6 +163,9 @@ export async function upsertAssignments(tenantId: string, input: AssignmentInput
     if (!a.deviceId || a.deviceId.length > 255) {
       throw new AppError(400, 'INVALID_DEVICE_ID', `deviceId 不合法: ${a.deviceId}`);
     }
+    // 列宽 120。截断而不是报错 —— 名字太长不该让整次登记失败，
+    // 而登记失败的后果是任务退回广播 = 重复出单
+    if (a.deviceName && a.deviceName.length > 120) a.deviceName = a.deviceName.slice(0, 120);
   }
 
   if (stationIds.size > 0) {
@@ -177,8 +182,16 @@ export async function upsertAssignments(tenantId: string, input: AssignmentInput
     input.map((a) =>
       prisma.printerAssignment.upsert({
         where: { tenantId_scope: { tenantId, scope: a.scope } },
-        create: { tenantId, scope: a.scope, deviceId: a.deviceId, fallbackDeviceId: a.fallbackDeviceId ?? null },
-        update: { deviceId: a.deviceId, fallbackDeviceId: a.fallbackDeviceId ?? null },
+        create: {
+          tenantId, scope: a.scope, deviceId: a.deviceId,
+          fallbackDeviceId: a.fallbackDeviceId ?? null,
+          deviceName: a.deviceName ?? null,
+        },
+        update: {
+          deviceId: a.deviceId,
+          fallbackDeviceId: a.fallbackDeviceId ?? null,
+          deviceName: a.deviceName ?? null,
+        },
       }),
     ),
   );
