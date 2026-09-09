@@ -94,6 +94,12 @@ export interface PrintTaskPayloadForClient {
     rawData?: any;
   };
   createdAt: string;
+  /**
+   * 厨房单专用：这张单属于哪个备餐站。
+   * 客户端按 (ticketType, stationId) 找打印机 —— 不带的话只能回退到
+   * 「不带站的绑定」，而按站配过打印机的商家没有那条绑定。
+   */
+  stationId?: string | null;
 }
 
 // Server → POS: 新配送订单（POS 选择备餐时间后调用 uber service 创建配送单）

@@ -9,8 +9,8 @@ import logger from '../utils/logger';
 import { deviceRegistry } from './device-registry';
 import { assignmentScope } from '../services/print-routing';
 import { sendMessage } from './ws-server';
+import { taskToClientPayload } from './print-task-payload';
 import type {
-  PrintTaskPayloadForClient,
   WSDeliveryOrderMessage,
   WSDeliveryStatusUpdateMessage,
   WSThirdPartyOrderMessage,
@@ -44,16 +44,11 @@ export async function dispatchPrintTasks(
   let broadcastCount = 0;
 
   for (const task of tasks) {
-    const clientPayload: PrintTaskPayloadForClient = {
-      id: task.id,
-      orderId: task.orderId,
-      ticketType: task.ticketType,
-      source: task.source,
-      priority: task.priority,
-      payload: task.payload,
-      createdAt: task.createdAt instanceof Date ? task.createdAt.toISOString() : task.createdAt,
+    const msg = {
+      type: 'PRINT_TASK' as const,
+      task: taskToClientPayload(task),
+      timestamp: new Date().toISOString(),
     };
-    const msg = { type: 'PRINT_TASK' as const, task: clientPayload, timestamp: new Date().toISOString() };
 
     const scope = assignmentScope(task);
     const assignment = byScope.get(scope);
