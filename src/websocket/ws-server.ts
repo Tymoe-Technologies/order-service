@@ -253,8 +253,6 @@ async function handleTaskResult(msg: WSTaskResultMessage): Promise<void> {
     KITCHEN_TICKET:   'KITCHEN_TICKET',
     ITEM_LABEL:       'LABEL',
     CUSTOM_LABEL:     'LABEL',
-    DAILY_REPORT:     'DAILY_REPORT',
-    SHIFT_REPORT:     'SHIFT_REPORT',
   };
 
   try {

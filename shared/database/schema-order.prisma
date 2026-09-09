@@ -482,12 +482,14 @@ enum NoteType {
   INTERNAL
 }
 
+/// 日结报表 / 交接班表已于 2026-09-09 从这两个枚举里拿掉
+/// （迁移见 migrations-manual/drop-report-ticket-types.sql）——
+/// 留着不用的枚举值会让每个 switch 都得继续照顾它，而下一个人
+/// 分不出哪些分支在用、哪些是留着的。
 enum PrintType {
   RECEIPT
   KITCHEN_TICKET
   LABEL
-  DAILY_REPORT
-  SHIFT_REPORT
 }
 
 enum TicketType {
@@ -495,8 +497,6 @@ enum TicketType {
   KITCHEN_TICKET
   ITEM_LABEL
   CUSTOM_LABEL      // 顾客自定义标签（仅 WEB 订单）
-  DAILY_REPORT
-  SHIFT_REPORT
 }
 
 enum PrintStatus {

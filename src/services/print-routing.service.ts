@@ -10,7 +10,7 @@ import logger from '../utils/logger';
 import { parseAssignmentScope, assignmentScope } from './print-routing';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const TICKET_TYPES = ['CUSTOMER_RECEIPT', 'KITCHEN_TICKET', 'ITEM_LABEL', 'CUSTOM_LABEL', 'DAILY_REPORT', 'SHIFT_REPORT'];
+const TICKET_TYPES = ['CUSTOMER_RECEIPT', 'KITCHEN_TICKET', 'ITEM_LABEL', 'CUSTOM_LABEL'];
 
 export interface StationInput {
   /**

@@ -6,11 +6,16 @@ import logger from '../utils/logger';
 import CloudinaryService from '../services/cloudinary.service';
 
 /*
-  可配置的票据类型。DAILY_REPORT / SHIFT_REPORT 已下线 ——
-  它们的 config 从来没有读取方（见 print-setting.service 的说明）。
-  仍然放行是为了让存量租户那两行能被读/改（比如关掉），只是后台不再提供入口。
+  可配置的票据类型。
+
+  DAILY_REPORT / SHIFT_REPORT 已于 2026-09-09 从 TicketType 枚举里删掉
+  （连存量配置行一起删了，见 migrations-manual/drop-report-ticket-types.sql），
+  所以这里也不再放行 —— 放行的话请求会一路走到 Prisma 才炸在枚举上，
+  报错指向数据库而不是「这个类型没有了」。
+
+  CUSTOM_LABEL 不在列：它的样子由顾客在网店里填，没有可配的项。
 */
-const VALID_TICKET_TYPES = ['CUSTOMER_RECEIPT', 'KITCHEN_TICKET', 'ITEM_LABEL', 'DAILY_REPORT', 'SHIFT_REPORT'];
+const VALID_TICKET_TYPES = ['CUSTOMER_RECEIPT', 'KITCHEN_TICKET', 'ITEM_LABEL'];
 
 export class PrintSettingController {
   /**
