@@ -934,6 +934,13 @@ router.get('/top-items', internalAuth, async (req: Request, res: Response) => {
         -- 这是「热销商品」榜，把购物袋排进去既没意义又会挤掉真正的商品：
         -- 耗材几乎每单都有，件数必然名列前茅。
         AND oi.line_kind = 'PRODUCT'
+        /*
+          礼品卡不是商品。卖卡是**收钱**（预收/负债），不是卖东西 ——
+          真正卖出去的东西在**核销**那一单里，算进这里等于同一笔生意数两次。
+          而且金额量级完全不同：实测库里一张 $1000 的卡把整张营收图压平了
+          （$1352 的「营收」里 $1000 是它），排行第一名永远是 Gift Card。
+        */
+        AND o.order_type <> 'GIFT_CARD'
         -- 口径同 daily-summary：已付款且未取消，不是「已完成」（见那边的长注释）
         AND o.payment_status = 'PAID'
         AND o.cancelled_at IS NULL

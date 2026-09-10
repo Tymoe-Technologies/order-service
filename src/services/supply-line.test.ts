@@ -77,4 +77,21 @@ describe('耗材行落库', () => {
     assert.match(internal, /line_kind = 'PRODUCT'/,
       'top-items 不再过滤 line_kind —— 每单都卖的打包袋会冲到热销榜第一名')
   })
+
+  /*
+    礼品卡同理，但理由不同：耗材是「不算商品」，礼品卡是「压根不是这笔生意」——
+    卖卡是预收（负债），真正卖出去的东西在核销那一单里。
+    实测库里一张 $1000 的卡让 Gift Card 稳坐排行第一、并把营收图压平。
+  */
+  test('热销榜排除礼品卡订单', () => {
+    const internal = readFileSync(join(__dirname, '..', 'routes', 'internal.ts'), 'utf8')
+    /* 切到**下一个路由**为止。按第一个 `});` 切会断在提前 return 的括号上，
+       于是断言看的是一段不含 SQL 的开头 —— 第一版就这么误判了 */
+    const from = internal.indexOf("router.get('/top-items'")
+    const to = internal.indexOf("router.get('/sales-by-hour'", from)
+    assert.ok(from > 0 && to > from, '找不到 top-items 这段（路由改名了？）')
+    const topItems = internal.slice(from, to)
+    assert.match(topItems, /order_type <> 'GIFT_CARD'/,
+      'top-items 没排除礼品卡 —— 一张卡的金额就能压平整张营收图')
+  })
 })
