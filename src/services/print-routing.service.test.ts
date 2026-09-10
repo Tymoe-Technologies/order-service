@@ -29,8 +29,17 @@ test('合法配置通过', () => {
   validateRoutingPayload(stations, routes);   // 不抛即通过
 });
 
-test('一个站都没有要拒', () => {
-  expectCode(() => validateRoutingPayload([], []), 'NO_STATION');
+/*
+  零个活跃站是**合法状态**，不是配置错误 —— 拆单算法对它有明确定义
+  （厨房单退回「全单一张、不带站名」，即加备餐站之前的行为）。
+  原来这两条被拒掉，结果是不想用备餐站的商家被迁移脚本建的那个站永久绑住。
+*/
+test('一个站都没有 → 放行（不用备餐站是允许的）', () => {
+  validateRoutingPayload([], []);
+});
+
+test('站全停用 → 放行（等价于不分站）', () => {
+  validateRoutingPayload([station({ isActive: false })], []);
 });
 
 test('没有兜底站要拒', () => {
@@ -47,10 +56,6 @@ test('兜底站被停用等于没有兜底站', () => {
   // 校验必须用同一套口径，否则两边理解不一致
   const stations = [station({ isActive: false }), station({ id: S2, name: '冷菜站', isDefault: false })];
   expectCode(() => validateRoutingPayload(stations, []), 'DEFAULT_STATION_REQUIRED');
-});
-
-test('全部停用要拒', () => {
-  expectCode(() => validateRoutingPayload([station({ isActive: false })], []), 'NO_ACTIVE_STATION');
 });
 
 test('站名为空要拒', () => {
