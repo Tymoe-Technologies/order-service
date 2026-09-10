@@ -215,9 +215,6 @@ export function validateRoutingPayload(stationsIn: StationInput[], routesIn: Rou
   if (!Array.isArray(stationsIn) || !Array.isArray(routesIn)) {
     throw new AppError(400, 'INVALID_PAYLOAD', 'stations 和 routes 必须是数组');
   }
-  if (stationsIn.length === 0) {
-    throw new AppError(400, 'NO_STATION', '至少要有一个备餐站');
-  }
   const nameSeen = new Set<string>();
   for (const s of stationsIn) {
     if (!UUID_RE.test(s.id || '')) throw new AppError(400, 'INVALID_STATION_ID', `站 id 不合法: ${s.id}`);
@@ -228,16 +225,29 @@ export function validateRoutingPayload(stationsIn: StationInput[], routesIn: Rou
     if (nameSeen.has(name)) throw new AppError(400, 'DUPLICATE_STATION_NAME', `备餐站名称重复: ${name}`);
     nameSeen.add(name);
   }
+  /*
+    **零个活跃站是合法状态**，不是配置错误。
+
+    原来这里拦了两道（`NO_STATION` 一个站都没有、`NO_ACTIVE_STATION` 全停用），
+    而拆单算法对这种情况有明确定义：厨房单退回「全单一张、不带站名」，
+    也就是加备餐站之前的行为。POS 的打印机设置也有对应的零站分支。
+    只有保存这条路不让你到达那个状态 —— 于是不想用备餐站的商家
+    被迁移脚本建的那个站永久绑住，删不掉。
+
+    校验只该守算法真正依赖的那条不变式（见下），不该替商家决定要不要用这个功能。
+  */
   const active = stationsIn.filter((s) => s.isActive !== false);
-  if (active.length === 0) {
-    throw new AppError(400, 'NO_ACTIVE_STATION', '至少要有一个启用的备餐站');
-  }
-  // 兜底站是可靠性的核心：没配路由的新菜全靠它。恰好一个，不多不少 ——
-  // 零个的话新菜谁都收不到，多个的话「进哪个」取决于排序，商家看不出来
-  const defaults = active.filter((s) => s.isDefault);
-  if (defaults.length !== 1) {
-    throw new AppError(400, 'DEFAULT_STATION_REQUIRED',
-      `启用的备餐站里必须恰好有一个兜底站，当前 ${defaults.length} 个`);
+  /*
+    兜底站是可靠性的核心：没配路由的新菜全靠它。**有活跃站时**恰好一个，
+    不多不少 —— 零个的话新菜谁都收不到，多个的话「进哪个」取决于排序，
+    商家看不出来。没有活跃站时这条不适用（那时压根不分站）。
+  */
+  if (active.length > 0) {
+    const defaults = active.filter((s) => s.isDefault);
+    if (defaults.length !== 1) {
+      throw new AppError(400, 'DEFAULT_STATION_REQUIRED',
+        `启用的备餐站里必须恰好有一个兜底站，当前 ${defaults.length} 个`);
+    }
   }
 
   const idsIn = new Set(stationsIn.map((s) => s.id));
