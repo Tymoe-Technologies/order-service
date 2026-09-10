@@ -5,6 +5,7 @@
  */
 
 import { Router, Request, Response } from 'express';
+import { aggregateTaxLines } from '../services/tax-lines';
 import { internalAuth } from '../middleware/auth';
 import {
   broadcastDeliveryStatusUpdate,
@@ -820,7 +821,7 @@ router.get('/daily-summary', internalAuth, async (req: Request, res: Response) =
       totalAmount:    Number(a._sum.totalAmount    ?? 0),
     });
 
-    const [agg, refundAgg, platformAgg, creditAgg, giftCardAgg] = await Promise.all([
+    const [agg, refundAgg, platformAgg, creditAgg, taxRows, giftCardAgg] = await Promise.all([
       prisma.order.aggregate({
         where: dayWhere,
         _sum: SUMS,
@@ -848,6 +849,15 @@ router.get('/daily-summary', internalAuth, async (req: Request, res: Response) =
         _count: { id: true },
       }),
       /*
+        税种明细的原料。只取这两列 —— 区间内订单可能上千条，
+        整行拉回来纯属浪费；聚合在应用层做（见 aggregateTaxLines 的说明：
+        要按税种名归并、还要判断这批订单是不是**每一张**都有明细）。
+      */
+      prisma.order.findMany({
+        where: dayWhere,
+        select: { taxAmount: true, taxLines: true },
+      }),
+      /*
         卖出去的礼品卡。**单独一组，不从三组里减** ——
         它和 platform/credit/inStore 不是同一个维度（礼品卡也可能从任一渠道卖出），
         三组必须继续严格加总等于顶层数字。
@@ -863,6 +873,7 @@ router.get('/daily-summary', internalAuth, async (req: Request, res: Response) =
     const platform = flat(platformAgg);
     const credit = flat(creditAgg);
     const giftCard = flat(giftCardAgg);
+    const tax = aggregateTaxLines(taxRows);
     /*
       店内组用**减法**而不是再查一次：
       三组必须严格加起来等于总数，各查各的话「没有渠道的单」「渠道被删了的单」
@@ -916,6 +927,16 @@ router.get('/daily-summary', internalAuth, async (req: Request, res: Response) =
          * 实测：某店 $1352 的「销售额」里 $1000 是一张礼品卡。
          */
         giftCard,
+        /**
+         * 税额按税种拆开（GST / PST / HST…）。加拿大申报要按税种分别填，
+         * 而 taxAmount 只是一个合计。
+         *
+         * `complete=false` 表示这个区间里有订单**没有**明细
+         * （存量订单都没有，POS 是 2026-09-10 之后才开始上报的）——
+         * 那时拆出来的和小于总税额，**日结单必须退回只印合计**：
+         * 印一组不完整的拆分，店主按它申报就会少报。
+         */
+        taxByRate: tax,
         refundCount:    refundAgg._count.id,
         refundAmount:   Number(refundAgg._sum.totalAmount ?? 0),
       },

@@ -79,6 +79,21 @@ export const createOrderSchema = Joi.object({
 
   // 费用相关（分，整数）
   taxAmount: Joi.number().integer().min(0).default(0),
+  /*
+    税种明细 `[{ name, rate, amount }]`（amount 单位分）。加拿大申报要按
+    税种分别填，而 taxAmount 只是合计。
+
+    这里只做形状校验，**加不加得平交给 sanitizeTaxLines** ——
+    在这里拒会让整单 400（一笔已经收了钱的单落不了库），
+    而那边的处理是「丢掉明细、保留订单」，坏得轻得多。
+  */
+  taxLines: Joi.array().items(
+    Joi.object({
+      name: Joi.string().max(40).required(),
+      rate: Joi.number().min(0).max(1).required(),
+      amount: Joi.number().integer().min(0).required(),
+    }),
+  ).optional(),
   discountAmount: Joi.number().integer().min(0).default(0),
   serviceFee: Joi.number().integer().min(0).default(0),
   deliveryFee: Joi.number().integer().min(0).default(0),
