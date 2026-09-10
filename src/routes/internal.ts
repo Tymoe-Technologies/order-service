@@ -820,7 +820,7 @@ router.get('/daily-summary', internalAuth, async (req: Request, res: Response) =
       totalAmount:    Number(a._sum.totalAmount    ?? 0),
     });
 
-    const [agg, refundAgg, platformAgg, creditAgg] = await Promise.all([
+    const [agg, refundAgg, platformAgg, creditAgg, giftCardAgg] = await Promise.all([
       prisma.order.aggregate({
         where: dayWhere,
         _sum: SUMS,
@@ -847,11 +847,22 @@ router.get('/daily-summary', internalAuth, async (req: Request, res: Response) =
         _sum: SUMS,
         _count: { id: true },
       }),
+      /*
+        卖出去的礼品卡。**单独一组，不从三组里减** ——
+        它和 platform/credit/inStore 不是同一个维度（礼品卡也可能从任一渠道卖出），
+        三组必须继续严格加总等于顶层数字。
+      */
+      prisma.order.aggregate({
+        where: { ...dayWhere, orderType: 'GIFT_CARD' },
+        _sum: SUMS,
+        _count: { id: true },
+      }),
     ]);
 
     const total = flat(agg);
     const platform = flat(platformAgg);
     const credit = flat(creditAgg);
+    const giftCard = flat(giftCardAgg);
     /*
       店内组用**减法**而不是再查一次：
       三组必须严格加起来等于总数，各查各的话「没有渠道的单」「渠道被删了的单」
@@ -889,6 +900,22 @@ router.get('/daily-summary', internalAuth, async (req: Request, res: Response) =
          * 一直存在，只是以前没人说得清差在哪。
          */
         byChannelKind: { platform, credit, inStore },
+        /**
+         * 卖出去的礼品卡。**已经含在上面的顶层数字里**，要看真实收入得减掉它。
+         *
+         * 卖卡收到的钱是**预收（负债）**，不是收入 —— 收入在卡被**核销**、
+         * 真正交付商品的那一单里确认（IFRS 15 / ASC 606）。算进销售额等于
+         * 同一笔生意数两次。加拿大 GST/HST 同理：卖礼品券不是应税供应，
+         * 所以这类单的 taxAmount 本来就是 0。
+         *
+         * **为什么不直接从顶层减掉**：顶层是「钱收了多少」的口径，
+         * finance 的现金对账要靠它对抽屉（卖卡那 $1000 确实进了抽屉）。
+         * 减了对账就差一截。所以口径的选择交给消费方 ——
+         * 报表减，对账不减。
+         *
+         * 实测：某店 $1352 的「销售额」里 $1000 是一张礼品卡。
+         */
+        giftCard,
         refundCount:    refundAgg._count.id,
         refundAmount:   Number(refundAgg._sum.totalAmount ?? 0),
       },
