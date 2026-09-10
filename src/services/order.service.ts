@@ -4,6 +4,7 @@ import { IN_STORE_PICKUP_TYPES } from './fulfillment-option.service';
 import { AppError } from '../middleware/errorHandler';
 import { runWithIdempotency, fingerprintOf } from './idempotency.service';
 import { toE164 } from '../utils/phone';
+import { sanitizeTaxLines } from './tax-lines';
 import { getConsumerIdByMemberId } from '../utils/member-client';
 import { enqueueEvent } from './outbox.service';
 import logger from '../utils/logger';
@@ -57,6 +58,14 @@ async function notifyOrderPaid(params: {
   subtotal?: number;
   channelDiscountAmount?: number;
   taxAmount?: number;
+  /**
+   * 税额按税种拆开的明细：`[{ name, rate, amount }]`（amount 单位分）。
+   *
+   * POS 一直算得出（utils/taxCalculation 的 taxBreakdown），原来没发上来 ——
+   * 于是日结单只能印一个税额合计，而加拿大申报要按税种分别填。
+   * 不传就是没有，报表退回只印合计那一行（存量订单都是这样）。
+   */
+  taxLines?: Array<{ name: string; rate: number; amount: number }>;
   channelId?: string | null;
   channelName?: string | null;
   platformType?: string | null;
@@ -172,6 +181,14 @@ interface CreateOrderData {
 
   // 费用相关
   taxAmount?: number;
+  /**
+   * 税额按税种拆开的明细：`[{ name, rate, amount }]`（amount 单位分）。
+   *
+   * POS 一直算得出（utils/taxCalculation 的 taxBreakdown），原来没发上来 ——
+   * 于是日结单只能印一个税额合计，而加拿大申报要按税种分别填。
+   * 不传就是没有，报表退回只印合计那一行（存量订单都是这样）。
+   */
+  taxLines?: Array<{ name: string; rate: number; amount: number }>;
   discountAmount?: number;
   serviceFee?: number;
   deliveryFee?: number;
@@ -854,6 +871,17 @@ class OrderService {
               // 金额明细（分，整数）
               subtotal: Math.round(subtotal),
               taxAmount: Math.round(taxAmount),
+              /*
+                税种明细。**校验后才存** —— 各行加起来必须等于 taxAmount，
+                对不上就当没有（宁可日结单退回只印合计，也不能印一组
+                自己加不平的税额，那比没有更糟：店主会拿它去申报）。
+              */
+              /* `?? undefined` 而不是留 null：Prisma 的 Json 字段不接受
+                 JS 的 null（要 Prisma.JsonNull），而「不写这个字段」
+                 和「写 DB NULL」在这里是同一个意思 —— 都表示没有明细 */
+              /* as any：Prisma 的 InputJsonValue 不接受具名接口数组（索引签名不匹配），
+                 值本身已经被 sanitizeTaxLines 验过形状和加总 */
+              taxLines: (sanitizeTaxLines(data.taxLines, Math.round(taxAmount)) ?? undefined) as any,
               // 订单总折扣 = 商品折扣合计 + 整单折扣
               discountAmount: Math.round(itemDiscountTotal + orderLevelDiscount),
               channelDiscountAmount: Math.round(channelDiscountAmount),

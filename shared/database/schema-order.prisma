@@ -41,6 +41,22 @@ model Order {
   // 已包含在 taxAmount 里，单列一份是为了对账时能把销项拆开看。
   deliveryFeeTax Int           @default(0) @map("delivery_fee_tax")
 
+  /// 税额按**税种**拆开的快照：`[{ name, rate, amount }]`（amount 单位分）。
+  ///
+  /// 为什么要存：加拿大申报要按税种分别填（GST 5% / PST 7% 或 HST），
+  /// 而这里原来只有一个 `taxAmount` 合计 —— 日结单上没法拆，
+  /// 店主只能自己按比例倒推，倒推出来的数和逐行四舍五入的真实值对不上。
+  ///
+  /// 为什么是快照而不是关联税率表：税率会调（省税改档、商品换税类），
+  /// 历史单必须保持开票当时的样子 —— 和 itemName / categoryId 同一个道理。
+  ///
+  /// POS 一直算得出这份明细（utils/taxCalculation 的 taxBreakdown），
+  /// 只是建单时没发出来。存量订单为 null，报表退回只印合计那一行。
+  ///
+  /// 用 Json 而不是子表：报表只需要按 name 做一次范围内求和，
+  /// `json_array_elements` 够用，省一张表和一条写入路径。
+  taxLines       Json?         @map("tax_lines") @db.Json
+
   uberDeliveryFee Int          @default(0) @map("uber_delivery_fee")  // Uber 实际配送成本（分）
   // Uber 向商家收取的配送费里所含的税（分）—— 进项税，报税时可做 ITC 抵扣。
   // ⚠️ 目前无法自动填充：Uber Direct 的报价接口只返回费用总额，不返回税额明细。
