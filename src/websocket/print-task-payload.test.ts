@@ -57,3 +57,28 @@ test('分发和补拉用的是同一个序列化函数', () => {
     assert.doesNotMatch(src, /ticketType: task\.ticketType/, `${f} 里又手抄了一份字段列表`)
   }
 })
+
+/*
+  订单号。打失败时收银员看到的如果只有「厨房单 · 热菜 · 失败」，
+  他不知道是哪一单 —— 没法告诉顾客，也没法手动补打。
+  orderId 是 UUID，对人没用。
+*/
+test('带上订单号（面板要显示它）', () => {
+  const t = { ...kitchenTask, payload: { orderData: { orderNumber: '260910-P02-1HPJ' } } }
+  assert.equal(taskToClientPayload(t).orderNumber, '260910-P02-1HPJ')
+})
+
+test('payload 里没有就给 null，不让字段消失', () => {
+  // 和 stationId 同一个理由：undefined 会被 JSON.stringify 丢掉，
+  // 客户端分不出「这单没号」和「忘了传」
+  const t = taskToClientPayload({ ...kitchenTask, payload: { orderData: {} } })
+  assert.equal(t.orderNumber, null)
+  assert.ok('orderNumber' in JSON.parse(JSON.stringify(t)))
+})
+
+test('payload 形状不对也不炸', () => {
+  // 存量任务的 payload 是旧格式（receiptData/labelData），没有 orderData
+  assert.equal(taskToClientPayload({ ...kitchenTask, payload: { receiptData: {} } }).orderNumber, null)
+  assert.equal(taskToClientPayload({ ...kitchenTask, payload: null }).orderNumber, null)
+})
+

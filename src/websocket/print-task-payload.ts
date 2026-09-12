@@ -23,5 +23,14 @@ export function taskToClientPayload(task: any): PrintTaskPayloadForClient {
     createdAt: task.createdAt instanceof Date ? task.createdAt.toISOString() : task.createdAt,
     // 厨房单按备餐站绑打印机，客户端靠它找目标机器
     stationId: task.stationId ?? null,
+    /*
+      订单号。POS 的打印状态面板要显示它 —— 一张票打失败时，
+      收银员看到的如果只有票据类型和错误原文，**根本不知道是哪一单**，
+      没法告诉顾客、也没法手动补打。
+
+      从 payload 里取而不是查库：payload.orderData 就是那张订单，
+      多查一次纯属浪费。取不到就留空，面板那边会退回显示别的信息。
+    */
+    orderNumber: task.payload?.orderData?.orderNumber ?? null,
   };
 }
