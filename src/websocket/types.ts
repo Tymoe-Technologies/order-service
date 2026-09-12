@@ -100,6 +100,14 @@ export interface PrintTaskPayloadForClient {
    * 「不带站的绑定」，而按站配过打印机的商家没有那条绑定。
    */
   stationId?: string | null;
+  /**
+   * 订单号（`260910-P02-1HPJ` 这种）。
+   *
+   * POS 的打印状态面板显示它：一张票打失败时，只有票据类型和错误原文
+   * 的话收银员**不知道是哪一单** —— 没法告诉顾客，也没法手动补打。
+   * orderId 是 UUID，对人没用。
+   */
+  orderNumber?: string | null;
 }
 
 // Server → POS: 新配送订单（POS 选择备餐时间后调用 uber service 创建配送单）
