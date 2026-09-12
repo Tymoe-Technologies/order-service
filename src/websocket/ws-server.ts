@@ -397,10 +397,40 @@ async function handleFetchPending(ws: WebSocket, _msg: WSFetchPendingMessage): P
 // ========== 工具函数 ==========
 
 /**
- * 发送 WebSocket 消息
+ * 单条连接允许积压的字节数。
+ *
+ * 打印任务的 payload 是整份订单快照，生产库实测**平均 14 KB、最大 71 KB**。
+ * 1 MB 大约是十几张票的量 —— 正常设备几毫秒就冲干净，积到这个数只有一种
+ * 解释：那头已经不读了。
+ */
+const WS_MAX_BUFFERED_BYTES = 1024 * 1024;
+
+/**
+ * 发送 WebSocket 消息。
+ *
+ * ## 为什么要看 bufferedAmount
+ * `readyState === OPEN` **判不出半死的连接**：收银机休眠、网线被拔、
+ * 中间设备静默丢包时，TCP 的 FIN 根本不会到，socket 在服务端看来一直是 OPEN。
+ * 这时候 `ws.send()` 不报错，数据全堆在进程内存里 —— 而 order-service
+ * 是单进程，内存涨上去是整个服务的事，不只是打印功能。
+ *
+ * 返回 false 时调用方的处理已经是对的：任务留 PENDING，
+ * 等那台设备重连后自己来补拉（见 handleFetchPending）。
  */
 export function sendMessage(ws: WebSocket, msg: WSMessage): boolean {
   if (ws.readyState !== WebSocket.OPEN) return false;
+  if (ws.bufferedAmount > WS_MAX_BUFFERED_BYTES) {
+    logger.warn('[WS] 连接积压过多，跳过发送', {
+      bufferedAmount: ws.bufferedAmount,
+      type: (msg as any).type,
+    });
+    /*
+      ponytail: 只跳过这一条，不主动 terminate。心跳超时那条路本来就会
+      把它收掉；在这里断连会让「网络抖一下」变成「掉线重连」，
+      而重连要重新鉴权 + 补拉，代价比等心跳大。
+    */
+    return false;
+  }
   try {
     ws.send(JSON.stringify(msg));
     return true;
