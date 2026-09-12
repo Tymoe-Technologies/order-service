@@ -20,6 +20,7 @@ import { startScheduledOrderRelease, stopScheduledOrderRelease } from './jobs/sc
 import { startDeliveryConfirmationWatchdog, stopDeliveryConfirmationWatchdog } from './jobs/delivery-confirmation-watchdog';
 import { startAutoDeliveryConfirmation, stopAutoDeliveryConfirmation } from './jobs/auto-delivery-confirmation';
 import { purgeExpiredIdempotencyKeys } from './services/idempotency.service';
+import { purgeOldPrintTasks } from './services/print-task-retention';
 import { startOutboxRelay } from './services/outbox.service';
 
 const PORT = process.env.PORT || 3002;
@@ -148,6 +149,14 @@ const startServer = async () => {
     */
     void purgeExpiredIdempotencyKeys().catch(() => {});
     setInterval(() => { void purgeExpiredIdempotencyKeys().catch(() => {}); }, 3600_000);
+
+    // ========== 打印任务保留期 ==========
+    /*
+      每条任务存着整份订单快照（实测平均 14 KB），而打完就没人再看。
+      同样不是正确性依赖，跟幂等键清理搭同一班车。
+    */
+    void purgeOldPrintTasks().catch(() => {});
+    setInterval(() => { void purgeOldPrintTasks().catch(() => {}); }, 3600_000);
   } catch (error) {
     logger.error('Failed to start server:', error);
     process.exit(1);
