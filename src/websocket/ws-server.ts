@@ -21,6 +21,8 @@ import type {
   PrintTaskPayloadForClient,
 } from './types';
 import { taskToClientPayload } from './print-task-payload';
+import { assignmentScope } from '../services/print-routing';
+import { selectTasksForDevice, MAX_REPRINT_AGE_MS } from './pending-task-selection';
 
 let wss: WebSocketServer | null = null;
 
@@ -327,18 +329,40 @@ async function handleFetchPending(ws: WebSocket, _msg: WSFetchPendingMessage): P
   }
 
   try {
-    // 查询该租户的待处理任务
-    const pendingTasks = await prisma.printTask.findMany({
+    /*
+      ── 只捞**这台设备该打的** ──
+
+      原来这里是 `status IN ('PENDING','SENT')` 而且完全不看是谁在问，
+      于是设备 B 重连一次就把定向推给 A 的厨房单打一遍（判断逻辑和理由
+      见 pending-task-selection.ts）。
+
+      时间闸放进 SQL 而不是只靠内存过滤：离线一整天的店，光是把一天的
+      任务连 payload（实测平均 14 KB）全查出来就够呛。
+    */
+    const candidates = await prisma.printTask.findMany({
       where: {
         tenantId: device.storeId,
         status: { in: ['PENDING', 'SENT'] },
+        createdAt: { gte: new Date(Date.now() - MAX_REPRINT_AGE_MS) },
       },
       orderBy: [
         { priority: 'asc' },
         { createdAt: 'asc' },
       ],
-      take: 50, // 限制一次最多返回 50 个
+      // 先多取一些，归属过滤之后再截断到 50
+      take: 200,
     });
+
+    const assignments = await prisma.printerAssignment.findMany({
+      where: { tenantId: device.storeId },
+    });
+    const owners = new Map(assignments.map((a) => [a.scope, a]));
+
+    const pendingTasks = selectTasksForDevice(
+      candidates.map((t) => ({ ...t, scope: assignmentScope(t) })),
+      owners,
+      device.deviceId,
+    ).slice(0, 50);
 
     // 转换为客户端格式
     const tasks: PrintTaskPayloadForClient[] = pendingTasks.map(taskToClientPayload);
@@ -349,15 +373,16 @@ async function handleFetchPending(ws: WebSocket, _msg: WSFetchPendingMessage): P
       timestamp: new Date().toISOString(),
     });
 
-    // 更新这些任务状态为 SENT
+    /*
+      全部重新标 SENT（包含被超时回收的那些）——
+      原来只更新 status='PENDING' 的，于是回收回来的任务 sentAt 还是旧值，
+      下一次补拉又会立刻判定「超时」再发一遍，形成每次重连都重打的循环。
+    */
     if (pendingTasks.length > 0) {
-      const taskIds = pendingTasks.filter(t => t.status === 'PENDING').map(t => t.id);
-      if (taskIds.length > 0) {
-        await prisma.printTask.updateMany({
-          where: { id: { in: taskIds } },
-          data: { status: 'SENT', sentAt: new Date(), deviceId: device.deviceId },
-        });
-      }
+      await prisma.printTask.updateMany({
+        where: { id: { in: pendingTasks.map((t) => t.id) } },
+        data: { status: 'SENT', sentAt: new Date(), deviceId: device.deviceId },
+      });
     }
 
     logger.info('[WS] 返回待处理任务', {
