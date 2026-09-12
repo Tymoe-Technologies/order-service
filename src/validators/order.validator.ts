@@ -94,6 +94,12 @@ export const createOrderSchema = Joi.object({
       amount: Joi.number().integer().min(0).required(),
     }),
   ).optional(),
+  /*
+    开这一单的 POS 设备码（auth-service 分配的，形如 `ylfin5tep`）。
+    **Joi 默认拒绝未知字段，整个请求会 400** —— 所以 POS 一旦开始发这个字段，
+    这里必须先放行，否则收了钱的单落不了库。
+  */
+  deviceId: Joi.string().max(255).optional(),
   discountAmount: Joi.number().integer().min(0).default(0),
   serviceFee: Joi.number().integer().min(0).default(0),
   deliveryFee: Joi.number().integer().min(0).default(0),
