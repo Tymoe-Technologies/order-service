@@ -166,6 +166,8 @@ interface CreateOrderData {
    */
   deliveryProvider?: 'MERCHANT' | 'PLATFORM';
   clientOrigin?: 'POS' | 'WEB' | 'KIOSK';
+  /** 开这一单的 POS 设备码。决定某张票是本地打还是转交给别的设备 */
+  deviceId?: string;
   tableNumber?: string;
   customerName?: string;
   customerPhone?: string;
@@ -853,6 +855,12 @@ class OrderService {
                 ? (data.deliveryProvider ?? 'MERCHANT')
                 : null,
               orderSource: clientOrigin,
+              /*
+                开这一单的 POS 设备码。用来判断「这单的某张票，下单那台机
+                自己能不能打」—— 见 print-task-ownership.ts。
+                只有 POS 会传；老版本不传，服务端按旧行为处理。
+              */
+              deviceId: data.deviceId || null,
               tableNumber: data.tableNumber || null,
               customerName: data.customerName || null,
               // 统一成 E.164 存；解析不出就原样保留（见 utils/phone）

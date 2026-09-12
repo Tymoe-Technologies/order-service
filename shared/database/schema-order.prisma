@@ -175,7 +175,19 @@ model Order {
   claimedOrderNumber String?    @map("claimed_order_number") @db.VarChar(50)
   updatedAt      DateTime      @updatedAt @map("updated_at")
   orderSource    OrderSource   @default(POS) @map("order_source")
-  
+
+  /// 开这一单的 POS 设备码（auth-service 分配的那个，和 PrinterAssignment.deviceId 同一个空间）。
+  ///
+  /// 用来回答一个问题：**这单的某张票，下单那台机自己能不能打？**
+  /// 能就由它本地打（服务端不重复生成），不能就生成任务定向推给负责的设备。
+  /// 没有它的话服务端分不出「这单是哪台机开的」—— 订单号中段那个
+  /// `P01/P02` 是店内短码，和设备码不是一回事。
+  ///
+  /// 可空：Web/Kiosk/第三方单本来就没有；老版本 POS 也不发。
+  /// **为空时服务端保持旧行为**（POS 单完全不生成任务），所以这次改动
+  /// 对没升级的收银机是无感的。
+  deviceId       String?       @map("device_id") @db.VarChar(255)
+
   // 状态时间戳（用于统计和追踪）
   scheduledConfirmedAt DateTime? @map("scheduled_confirmed_at") // 预约单被释放/转 PENDING 的时间
   confirmedAt    DateTime?     @map("confirmed_at")
