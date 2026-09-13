@@ -54,6 +54,25 @@ async function callUseGrantedReward(params: {
 }
 
 /**
+ * 下单的是**哪家店**。
+ *
+ * 积分流水的 organizationId 存的是会员归属的主店（上面 resolveMemberOrgId
+ * 把分店换成了 parentOrgId），所以它答不了「这笔在哪消费的」——
+ * 会员面板要显示门店就得单独带。
+ *
+ * 名字取不到不挡积分：流水少一个门店名，比少一笔积分轻得多。
+ * organizationService 有 5 分钟缓存，这里不会给每单加一次 HTTP。
+ */
+async function resolveStore(tenantId: string): Promise<{ storeId: string; storeName?: string }> {
+  try {
+    const info = await organizationService.getOrganization(tenantId);
+    return { storeId: tenantId, storeName: info?.orgName };
+  } catch {
+    return { storeId: tenantId };
+  }
+}
+
+/**
  * 调用 member-service 内部积分接口
  * totalAmount: 分（cents） → 转换为元（dollars）传给 member-service
  */
@@ -63,6 +82,8 @@ async function callEarnPoints(params: {
   orderAmountCents: number;
   orderId: string;
   source: 'ONLINE_ORDER' | 'STAFF_APP';
+  storeId?: string;
+  storeName?: string;
 }): Promise<void> {
   if (!INTERNAL_SERVICE_KEY) {
     logger.warn('[MemberHandler] INTERNAL_SERVICE_KEY 未配置，跳过积分累积');
@@ -82,6 +103,8 @@ async function callEarnPoints(params: {
       orderAmount: params.orderAmountCents / 100,  // cents → dollars
       orderId: params.orderId,
       source: params.source,
+      storeId: params.storeId,
+      storeName: params.storeName,
     }),
   });
 
@@ -146,6 +169,7 @@ export function registerMemberHandler(bus: IEventBus): void {
       orderId: e.orderId,
       // 来源按下单端分：member-service 那边用它区分线上单和店员代下单
       source: e.clientOrigin === 'WEB' ? 'ONLINE_ORDER' : 'STAFF_APP',
+      ...(await resolveStore(e.tenantId)),
     });
 
     // 支付成功后标记 GrantedReward 为 USED（非致命，失败只记日志）
@@ -199,6 +223,7 @@ export function registerMemberHandler(bus: IEventBus): void {
       orderAmountCents: earnBase,
       orderId: e.orderId,
       source: 'STAFF_APP',
+      ...(await resolveStore(e.tenantId)),
     });
 
     // POS 同步流程使用了会员券 → 标记为 USED(非致命,失败仅记日志)
