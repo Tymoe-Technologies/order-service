@@ -343,6 +343,31 @@ export class OrderStatusService {
   private async onOrderCompleted(order: any) {
     logger.info(`Order completed: ${order.orderNumber}`);
 
+    /*
+      整单直接完成时，把还挂着 PENDING 的分项一并标 READY。
+
+      分项备餐（merchant_online_order_config.item_completion_enabled）是双向的：
+      逐项点完 → 最后一项自动完成订单（见 order-item.service）；
+      而反过来，店员直接点「完成订单」时这些分项得跟着收尾，
+      否则订单是 COMPLETED 而 item 还停在 PENDING，备餐屏上那几行永远不消。
+
+      这段原本写在 order.service 那个**没有调用方**的 updateOrderStatus 里，
+      也就是说一直没生效。删死代码时挪过来。
+    */
+    try {
+      const config = await (prisma.merchantOnlineOrderConfig as any).findUnique({
+        where: { merchantId: order.tenantId },
+        select: { itemCompletionEnabled: true },
+      });
+      if (config?.itemCompletionEnabled) {
+        const { markAllItemsReady } = await import('./order-item.service');
+        await markAllItemsReady(order.id);
+      }
+    } catch (err) {
+      // 收尾失败不该把「订单已完成」这件事回滚
+      logger.warn('[OrderStatus] 分项收尾失败（非致命）', { orderId: order.id, err });
+    }
+
     // 从 discountReason 解析 grantedRewardId(POS/同步流程的会员券标记)
     const _dr: string | null = order.discountReason ?? null;
     const _grId = _dr && _dr.startsWith('GrantedReward:') ? _dr.slice('GrantedReward:'.length) : null;

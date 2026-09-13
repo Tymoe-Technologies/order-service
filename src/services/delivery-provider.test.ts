@@ -135,12 +135,14 @@ describe('配送流程只对本店自配送单触发', () => {
     assert.match(confirmService, /order\.deliveryProvider !== 'MERCHANT'/)
   })
 
+  /*
+    order.service 里原来也有一份同样的拦截，挂在一个**没有调用方**的
+    updateOrderStatus 上（连同一份和这里不一致的状态机），已随死代码删掉。
+    真正生效的只有 order-status.service 这条路 —— PATCH /orders/:id/status。
+  */
   test('「不许绕过接单直接改状态」的拦截同理', () => {
-    for (const [name, src] of [['order-status.service', statusService],
-                               ['order.service', orderService]] as const) {
-      assert.match(src, /order\.deliveryProvider === 'MERCHANT' &&\s*\n\s*!order\.deliveryConfirmedAt/,
-        `${name} 的拦截还在按 orderType+orderSource 判`)
-    }
+    assert.match(statusService, /order\.deliveryProvider === 'MERCHANT' &&\s*\n\s*!order\.deliveryConfirmedAt/,
+      'order-status.service 的拦截还在按 orderType+orderSource 判')
   })
 
   test('预约单释放：只有自配送单停在 PENDING 等接单', () => {
