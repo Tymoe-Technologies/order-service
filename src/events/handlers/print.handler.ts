@@ -42,20 +42,45 @@ async function triggerPrint(order: any, tenantId: string, clientOrigin: string):
   }
 }
 
+/**
+ * 建单时该不该由服务端触发打印。
+ *
+ * POS 不该：它建的是 **PENDING 单** —— 收银员点开礼品卡/组合支付时就先建好
+ * 拿 orderId，钱一分还没收。挂在这个事件上等于「进结算页就出票」，
+ * 顾客临时改主意或者换支付方式，票已经打出来了。
+ * （这正是跨设备转交那次改动带进来的回归：原来 POS 在这里直接 return。）
+ *
+ * Web / Uber 走这里是对的：它们到达 order-service 时钱已经收过了。
+ */
+export function shouldPrintOnCreate(clientOrigin: string): boolean {
+  return clientOrigin !== 'POS';
+}
+
+/**
+ * 支付成功时该不该由服务端触发打印。
+ *
+ * previousStatus 必须是 PENDING：updatePaymentStatus 被重复调用时
+ * （补记一笔、对账修正）第二次的 previousStatus 已经不是 PENDING 了，
+ * 靠它防重复出票。
+ *
+ * POS 单要求带 deviceId：老版本 POS 不发这个字段，服务端分不出是谁开的单，
+ * 生成任务会和那台机的本地打印**重复**。所以两端可以分开部署。
+ */
+export function shouldPrintOnPaid(e: {
+  clientOrigin: string;
+  previousStatus: string;
+  deviceId?: string | null;
+}): boolean {
+  if (e.previousStatus !== 'PENDING') return false;
+  if (e.clientOrigin === 'WEB') return true;
+  return e.clientOrigin === 'POS' && !!e.deviceId;
+}
+
 export function registerPrintHandler(bus: IEventBus): void {
-  // POS/KIOSK 创建订单后直接打印（POS 本地打印，不走 WebSocket）
+  // Web/Uber 建单即打印：它们到这儿时钱已经收过了。POS 等付款，见上面
   bus.on('ORDER_CREATED', async function print_ORDER_CREATED(event) {
     const e = event as OrderCreatedEvent;
-    /*
-      POS 单以前在这里直接 return（「本地打印，不走 WebSocket」），
-      结果是备餐站的打印机挂在别的设备上时那几张票根本到不了。
-      现在也生成，但只生成下单设备打不了的（见 triggerPrint）。
-
-      **deviceId 为空时保持旧行为**：老版本 POS 不发这个字段，
-      服务端分不出是谁开的单，生成任务就会和那台机的本地打印重复。
-      所以这次改动对没升级的收银机是无感的 —— 两端可以分开部署。
-    */
-    if (e.clientOrigin === 'POS' && !e.order?.deviceId) return;
+    if (!shouldPrintOnCreate(e.clientOrigin)) return;
     await triggerPrint(e.order, e.tenantId, e.clientOrigin);
   });
 
@@ -65,19 +90,27 @@ export function registerPrintHandler(bus: IEventBus): void {
     await triggerPrint(e.order, e.tenantId, 'WEB');
   });
 
-  // 支付成功（临时订单 PENDING → CONFIRMED 路径，非预约单）
+  /*
+    支付成功（PENDING → CONFIRMED，非预约单）。POS 单也在这里出票 ——
+    它建单时那张还是没付钱的 PENDING。
+    预约单 previousStatus === 'SCHEDULED'，到时间才打印，不在此处理。
+  */
   bus.on('ORDER_PAID', async function print_ORDER_PAID(event) {
     const e = event as OrderPaidEvent;
-    // 仅 WEB 普通订单从 PENDING 变为 CONFIRMED/COMPLETED 时触发打印
-    // 预约单 previousStatus === 'SCHEDULED'，到时间才打印，不在此处理
-    if (e.clientOrigin !== 'WEB' || e.previousStatus !== 'PENDING') return;
 
+    // deviceId 只在订单上，事件里没有，所以要先查
     const fullOrder = await prisma.order.findUnique({
       where: { id: e.orderId },
       include: { orderItems: { include: { orderItemModifiers: true } } },
     });
     if (!fullOrder) return;
 
-    await triggerPrint(fullOrder, e.tenantId, 'WEB');
+    if (!shouldPrintOnPaid({
+      clientOrigin: e.clientOrigin,
+      previousStatus: e.previousStatus,
+      deviceId: (fullOrder as any).deviceId,
+    })) return;
+
+    await triggerPrint(fullOrder, e.tenantId, e.clientOrigin);
   });
 }
