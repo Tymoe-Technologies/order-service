@@ -1413,6 +1413,8 @@ class OrderService {
         isScheduled: true,
         scheduledAt: { lte: overdueThreshold },
         status: { in: ['CONFIRMED', 'PREPARING', 'READY'] },
+        // 同 autoCompleteOverdueReady：钱没收齐的单不自动完成
+        paymentStatus: 'PAID',
       },
     });
 
@@ -1470,6 +1472,18 @@ class OrderService {
         // 白名单：新履约方式不会默认获得「超时自动完成」这个行为
         orderType: { in: [...IN_STORE_PICKUP_TYPES] },
         orderSource: { not: 'UBER_EATS' },
+        /*
+          钱没收齐的单不自动完成。
+
+          组合支付收到一半中断（PARTIALLY_PAID）的单照样会被推到 READY ——
+          餐做好了是一回事，钱收没收齐是另一回事。让它自动 COMPLETED 等于
+          把一张欠款单悄悄归档：订单管理里那颗「继续收款」只对非终态单出现，
+          单一完成就再也收不回来了。
+
+          精确匹配 PAID 而不是「排除 UNPAID/PARTIALLY_PAID」：REFUNDED 的单
+          也不该被自动完成 —— 退了款该走取消，不是完成。
+        */
+        paymentStatus: 'PAID',
       },
     });
 
