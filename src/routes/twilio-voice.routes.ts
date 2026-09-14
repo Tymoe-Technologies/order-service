@@ -17,7 +17,7 @@ const handleVoiceAlert = (req: Request, res: Response) => {
     return;
   }
 
-  const message = (text || 'Alert from Tymoe P O S.').slice(0, 500);
+  const message = (text || 'Alert from Reall P O S.').slice(0, 500);
   // XML 转义，防止文案里出现 & < > 破坏 TwiML 结构
   const escaped = message
     .replace(/&/g, '&amp;')

@@ -90,7 +90,7 @@ export async function sendOverdueUnconfirmedAlert(params: {
   }
   const orderRef = params.orderNumber || params.orderId;
   try {
-    await makeCall(to, `Alert from Tymoe P O S. Order ${orderRef} has not been accepted for over 15 minutes. Please check it immediately.`);
+    await makeCall(to, `Alert from Reall P O S. Order ${orderRef} has not been accepted for over 15 minutes. Please check it immediately.`);
   } catch (err: any) {
     logger.error('[AlertService] 超时未确认电话告警发起失败', { ...params, error: err.message });
   }
@@ -120,8 +120,8 @@ export async function sendAutoConfirmFailedAlert(params: {
 
   const orderRef = params.orderNumber || params.orderId;
   const message = params.refundOk
-    ? `Alert from Tymoe P O S. Automatic delivery creation failed for order ${orderRef}. The order has been cancelled and refunded. Please review.`
-    : `Urgent alert from Tymoe P O S. Automatic delivery creation failed for order ${orderRef}. The order was cancelled but the refund also failed. Manual action is required immediately.`;
+    ? `Alert from Reall P O S. Automatic delivery creation failed for order ${orderRef}. The order has been cancelled and refunded. Please review.`
+    : `Urgent alert from Reall P O S. Automatic delivery creation failed for order ${orderRef}. The order was cancelled but the refund also failed. Manual action is required immediately.`;
 
   try {
     await makeCall(to, message);
