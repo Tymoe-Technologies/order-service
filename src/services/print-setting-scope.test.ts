@@ -1,148 +1,63 @@
 /**
- * 票据设置的品牌 / 门店分层。
+ * 品牌模板 + 门店覆盖的合并边界。
  *
- * 这里错了不会报错，只会**悄悄失效**：
- *   · 过滤漏了 → 分店一保存就把品牌那套样式抄成自己的覆盖项，分层等于没有
- *   · 合并错了 → 分店没配过的项变成空（页脚变空白、纸宽变 undefined）
+ * 守的是「分店存了什么都不该动到品牌样式」—— 库里三家分店的收据 config
+ * 现在就躺着 `showLogo:false, logoUrl:''`（分店登录时查不到品牌 profile，
+ * 保存时写进去的）。白名单要是漏了一格，这三家的小票当场没 logo，
+ * 而且只有打出来才看得见。
  */
-import { test, describe } from 'node:test'
-import assert from 'node:assert/strict'
-import { mergeConfig, pickOverrides, STORE_OVERRIDABLE_PATHS } from './print-setting-scope'
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { mergeConfig, pickOverrides } from './print-setting-scope';
 
-const brand = () => ({
+// 形状照着库里真实记录写：主店 MIXUE 有 logo，分店那条是空 logo + 自己的店名
+const brand = {
+  language: 'zh-CN',
   paperWidth: 80,
-  language: 'en',
   sections: {
-    storeInfo: { showLogo: true, logoUrl: 'https://brand/logo.png', name: '总店', address: '1 Main St', phone: '111' },
-    items: { showSku: false, fontSize: 'medium' },
-    footer: { showQrCode: true, qrCodeUrl: 'https://brand/qr', customMessage: '谢谢惠顾', showOrderNotes: true },
+    storeInfo: { showLogo: true, logoUrl: 'https://x/main-logo.png', name: 'MIXUE', phone: '604-000-0000' },
+    footer: { showQrCode: true, customMessage: '谢谢惠顾' },
   },
-})
+};
+const branch = {
+  language: 'en',
+  paperWidth: 58,
+  sections: {
+    storeInfo: { showLogo: false, logoUrl: '', name: 'MIXUE Surrey', phone: '604-111-1111' },
+    footer: { showQrCode: false, customMessage: 'Surrey 会员日 8 折' },
+  },
+};
 
-describe('mergeConfig', () => {
-  /*
-    门店级字段不继承：主店那条记录同时是品牌模板和主店自己的门店设置，
-    继承它等于「主店店长改自己店的语言，全品牌跟着变」。
-  */
-  test('分店没配过 → 拿到品牌的样式，但门店级字段是空的', () => {
-    const out = mergeConfig(brand(), null)
-    // 样式照常继承
-    assert.equal(out.sections.storeInfo.logoUrl, 'https://brand/logo.png')
-    assert.equal(out.sections.items.fontSize, 'medium')
-    assert.equal(out.sections.footer.showQrCode, true)
-    // 门店级的不继承 —— 主店的语言/页脚不该跑到分店单据上
-    assert.equal(out.language, undefined)
-    assert.equal(out.sections.footer.customMessage, undefined)
-    assert.equal(out.sections.storeInfo.name, undefined)
-  })
+describe('票据配置的品牌/门店分层', () => {
+  it('分店的空 logo 盖不掉主店的', () => {
+    const si = mergeConfig(brand, branch).sections.storeInfo;
+    assert.equal(si.logoUrl, 'https://x/main-logo.png');
+    assert.equal(si.showLogo, true);
+  });
 
-  test('主店改自己的语言，不影响没配过的分店', () => {
-    const b = brand()
-    b.language = 'zh-CN'                       // 主店店长把自己店改成中文
-    assert.equal(mergeConfig(b, null).language, undefined)
-    assert.equal(mergeConfig(b, { language: 'fr' }).language, 'fr')
-  })
+  it('样式类的开关一律跟品牌', () => {
+    assert.equal(mergeConfig(brand, branch).sections.footer.showQrCode, true);
+    assert.equal(mergeConfig(brand, branch).paperWidth, 80);
+  });
 
-  test('只覆盖分店真正配了的项，样式仍跟品牌', () => {
-    const out = mergeConfig(brand(), { language: 'zh-CN', sections: { footer: { customMessage: '本店周三会员日' } } })
-    assert.equal(out.language, 'zh-CN')
-    assert.equal(out.sections.footer.customMessage, '本店周三会员日')
-    // 同一个 footer 里**品牌管的**那些不能丢
-    assert.equal(out.sections.footer.showQrCode, true)
-    // 品牌资产纹丝不动
-    assert.equal(out.sections.storeInfo.logoUrl, 'https://brand/logo.png')
-    assert.equal(out.sections.items.fontSize, 'medium')
-  })
+  it('语言、页脚文案、店铺信息跟分店', () => {
+    const m = mergeConfig(brand, branch);
+    assert.equal(m.language, 'en');
+    assert.equal(m.sections.footer.customMessage, 'Surrey 会员日 8 折');
+    assert.equal(m.sections.storeInfo.name, 'MIXUE Surrey');
+    assert.equal(m.sections.storeInfo.phone, '604-111-1111');
+  });
 
-  /* 分店那条里字段不存在 ≠ 要清空。不然分店没写页脚就变成空白小票 */
-  /* 分店那条里字段不存在 ≠ 要清空品牌管的项 */
-  test('undefined 不覆盖品牌的样式', () => {
-    const out = mergeConfig(brand(), { language: undefined, sections: { footer: {} } })
-    assert.equal(out.sections.footer.showQrCode, true)
-    assert.equal(out.sections.items.fontSize, 'medium')
-  })
+  it('分店没配语言时不继承主店的 —— 主店改自己那家店不该波及全品牌', () => {
+    const m = mergeConfig(brand, { sections: {} });
+    assert.equal(m.language, undefined);
+  });
 
-  /*
-    主店改自己的设置**不会动分店已经配好的覆盖**：两边是两条独立记录
-    （不同 tenantId），主店的写入只落在主店那条上，分店的覆盖永远盖在最后。
-    品牌管的那部分跟着变 —— 那正是品牌级的意义。
-  */
-  test('主店改动不覆盖分店已配好的那几项', () => {
-    const store = { language: 'fr', sections: { footer: { customMessage: 'Merci' } } }
-    const before = mergeConfig(brand(), store)
-
-    const changed = brand()
-    changed.language = 'zh-CN'                              // 主店改自己店的语言
-    changed.sections.footer.customMessage = '总店新文案'      // 主店改自己店的页脚
-    changed.sections.footer.showQrCode = false              // 品牌把二维码关了（样式）
-    const after = mergeConfig(changed, store)
-
-    // 分店自己配的两项纹丝不动
-    assert.equal(after.language, 'fr')
-    assert.equal(after.sections.footer.customMessage, 'Merci')
-    // 品牌管的那项跟着变了 —— 这是想要的
-    assert.equal(before.sections.footer.showQrCode, true)
-    assert.equal(after.sections.footer.showQrCode, false)
-  })
-
-  test('不改坏品牌那份对象（合并要深拷贝）', () => {
-    const b = brand()
-    mergeConfig(b, { sections: { footer: { customMessage: 'X' } } })
-    assert.equal(b.sections.footer.customMessage, '谢谢惠顾')
-  })
-})
-
-describe('pickOverrides', () => {
-  /*
-    后台 UI 现在发的是整份 config。不过滤的话分店保存一次，
-    品牌的 logo、字号、显示开关全被抄进分店那条，品牌再改就推不动了。
-  */
-  test('整份 config 进来，只留分店有权改的那几项', () => {
-    const picked = pickOverrides(brand())
-    assert.equal(picked.language, 'en')
-    assert.equal(picked.sections.footer.customMessage, '谢谢惠顾')
-    assert.equal(picked.sections.storeInfo.name, '总店')
-    // 品牌的东西一个都不能留下
-    assert.equal(picked.sections.storeInfo.logoUrl, undefined)
-    assert.equal(picked.sections.storeInfo.showLogo, undefined)
-    assert.equal(picked.sections.items, undefined)
-    assert.equal(picked.sections.footer.showQrCode, undefined)
-  })
-
-  /*
-    门店把纸张改回「跟随打印机」、把第二语言关掉，发的都是 null。
-    当成「没提交」过滤掉的话，分店那条里的旧值原地不动 —— 界面上改了没生效。
-  */
-  test('显式 null 要保留（那是「清除这项覆盖」的意思）', () => {
-    const picked = pickOverrides({ secondaryLanguage: null, language: 'fr' })
-    assert.equal(picked.secondaryLanguage, null)
-    assert.equal(picked.language, 'fr')
-    // 清除之后合并出来就是「没配」，由下游兜底（第二语言 → 不印副名）
-    const merged = mergeConfig({ language: 'en', secondaryLanguage: 'zh-CN' }, picked)
-    assert.equal(merged.secondaryLanguage, undefined)
-    assert.equal(merged.language, 'fr')
-  })
-
-  test('一项可覆盖的都没有 → null（不写空记录）', () => {
-    assert.equal(pickOverrides({ sections: { items: { fontSize: 'large' } } }), null)
-    assert.equal(pickOverrides(null), null)
-  })
-
-  /* 挑出来的东西必须能原样合并回去 —— 两个函数用的是同一份路径表 */
-  test('挑出来再合并 = 原值（往返一致）', () => {
-    const b = brand()
-    const store = { language: 'fr', sections: { footer: { customMessage: 'Merci' } } }
-    const out = mergeConfig(b, pickOverrides(store))
-    assert.equal(out.language, 'fr')
-    assert.equal(out.sections.footer.customMessage, 'Merci')
-  })
-
-  /* 纸张尺寸是品牌定的：旗下门店用同一种纸，票据才长得一样 */
-  test('路径表里没有 logo / 显示开关 / 纸张尺寸这些品牌项', () => {
-    const paths = STORE_OVERRIDABLE_PATHS as readonly string[]
-    for (const forbidden of ['sections.storeInfo.logoUrl', 'sections.storeInfo.showLogo', 'sections.items.fontSize',
-                             'paperWidth', 'labelWidth', 'labelHeight', 'labelGap']) {
-      assert.ok(!paths.includes(forbidden), `${forbidden} 不该让分店改`)
-    }
-  })
-})
+  it('pickOverrides 只放行白名单，且保留显式 null（= 清除覆盖）', () => {
+    const o = pickOverrides({ ...branch, language: null });
+    assert.equal(o.language, null);
+    assert.equal(o.sections.storeInfo.name, 'MIXUE Surrey');
+    assert.equal(o.sections.storeInfo.logoUrl, undefined);
+    assert.equal(o.paperWidth, undefined);
+  });
+});

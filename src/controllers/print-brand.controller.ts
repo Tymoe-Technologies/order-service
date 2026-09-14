@@ -1,9 +1,32 @@
 import { Request, Response, NextFunction } from 'express';
 import printBrandService from '../services/print-brand.service';
 import printSettingService from '../services/print-setting.service';
+import organizationService from '../services/organization.service';
 import CloudinaryService from '../services/cloudinary.service';
 import { successResponse } from '../utils/response';
 import logger from '../utils/logger';
+
+/*
+  品牌 Logo 只有一张，挂在主店名下。
+
+  `req.user.tenantId` 装的其实是**当前选中的 organizationId**（分店登录就是
+  分店那个 org），所以原来分店查到的永远是 null —— 界面上是个空的上传框，
+  而小票打出来却有主店的 logo（mergeConfig 的白名单里没有 logoUrl，
+  分店存什么都不算数）。看着像没配，实际在印，还能上传一张不生效的。
+
+  两头都改到主店那条：查按主店查，传/删只有主店能做。
+*/
+const mainOrgOf = (req: Request) => organizationService.resolveMainOrgId(req.user!.tenantId);
+
+/** 分店不许动品牌 Logo。返回 true 表示已经把 403 写出去了 */
+const rejectIfBranch = (res: Response, tenantId: string, mainOrgId: string): boolean => {
+  if (tenantId === mainOrgId) return false;
+  res.status(403).json({
+    success: false,
+    error: { code: 'BRAND_SCOPE_ONLY', message: '品牌 Logo 由主店统一设置' },
+  });
+  return true;
+};
 
 export class PrintBrandController {
   /**
@@ -12,8 +35,7 @@ export class PrintBrandController {
    */
   async getBrandProfile(req: Request, res: Response, next: NextFunction) {
     try {
-      const tenantId = req.user!.tenantId;
-      const profile = await printBrandService.getBrandProfile(tenantId);
+      const profile = await printBrandService.getBrandProfile(await mainOrgOf(req));
       // 未配置时返回空对象，前端可判断 null
       successResponse(res, profile ?? null);
     } catch (error) {
@@ -28,6 +50,7 @@ export class PrintBrandController {
   async uploadLogo(req: Request, res: Response, next: NextFunction) {
     try {
       const tenantId = req.user!.tenantId;
+      if (rejectIfBranch(res, tenantId, await mainOrgOf(req))) return;
 
       if (!CloudinaryService.isConfigured()) {
         res.status(500).json({
@@ -103,6 +126,7 @@ export class PrintBrandController {
   async deleteLogo(req: Request, res: Response, next: NextFunction) {
     try {
       const tenantId = req.user!.tenantId;
+      if (rejectIfBranch(res, tenantId, await mainOrgOf(req))) return;
 
       // 从 Cloudinary 删除
       const deleteResult = await CloudinaryService.deletePrintLogo(tenantId);
