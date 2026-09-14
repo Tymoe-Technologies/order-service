@@ -46,15 +46,30 @@ const set = (o: any, path: string, v: any): void => {
   cur[last] = v;
 };
 
+const del = (o: any, path: string): void => {
+  const keys = path.split('.');
+  const last = keys.pop()!;
+  const parent = keys.reduce((cur, k) => (cur == null ? cur : cur[k]), o);
+  if (parent && typeof parent === 'object') delete parent[last];
+};
+
 /**
  * 品牌模板 + 门店覆盖 = 这家店实际用的配置。
  *
- * 门店那条里**没有的字段就不覆盖** —— 分店没配过页脚时用品牌那句，
- * 而不是变成空字符串。
+ * ## 门店级字段**不从品牌继承**
+ * 主店那条记录同时是两样东西：品牌模板，和主店自己那家店的设置。
+ * 如果分店去继承它的 language / 页脚，主店店长把自己店改成中文，
+ * 所有没单独配过的分店就跟着变中文了 —— 他改的是自己那家店，不是全品牌。
+ *
+ * 所以这几项只认门店自己那条；没配过就是「没有」，由下游各自兜底
+ * （language 为空 → 商品名走界面语言，见 ticketLocale；
+ *  paperWidth 为空 → 用打印机自身的纸宽）。
+ * 品牌规定的是**样式**：显示开关、字号、版式、logo、二维码，那些照常继承。
  */
 export function mergeConfig(brandConfig: any, storeConfig: any): any {
-  if (!storeConfig) return brandConfig;
   const out = JSON.parse(JSON.stringify(brandConfig ?? {}));
+  for (const path of STORE_OVERRIDABLE_PATHS) del(out, path);
+  if (!storeConfig) return out;
   for (const path of STORE_OVERRIDABLE_PATHS) {
     const v = get(storeConfig, path);
     if (v !== undefined && v !== null) set(out, path, v);
