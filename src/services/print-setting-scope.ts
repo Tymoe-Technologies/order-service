@@ -12,7 +12,8 @@
  * 门店能改的只有这些，其余一律跟品牌：
  *   · `isEnabled`   —— 没有标签机的店必须能关掉标签，这是设备现实不是偏好
  *   · `paperWidth`  —— 58mm 的机器印不了 80mm 的版式，统一了会直接印坏
- *   · `language`    —— 温哥华店中文、多伦多店英文，本来就该按店
+ *   · `language` / `secondaryLanguage` —— 温哥华店中文、多伦多店英文；
+ *     厨房单的第二语言取决于这家店后厨是谁在看
  *   · 页脚自定义文案 —— 本店会员活动、营业时间这类
  *   · 店名/地址/电话 —— 它们是门店事实，不是样式（而且本来就由
  *     updateSetting 按 tenantId 自动从 auth-service 填）
@@ -24,6 +25,8 @@
 export const STORE_OVERRIDABLE_PATHS = [
   'paperWidth',
   'language',
+  // 第二语言和主语言同理：厨房里是谁在看，只有这家店知道
+  'secondaryLanguage',
   'sections.footer.customMessage',
   'sections.footer.qrCodeUrl',
   'sections.footer.qrCodeText',
