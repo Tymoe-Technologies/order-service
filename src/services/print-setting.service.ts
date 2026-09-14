@@ -114,13 +114,38 @@ export class PrintSettingService {
    * 获取所有打印设置
    */
   async getAllSettings(tenantId: string) {
-    const settings = await prisma.printSetting.findMany({
-      where: { tenantId },
-      orderBy: { ticketType: 'asc' },
-    });
+    const mainOrgId = await organizationService.resolveMainOrgId(tenantId);
 
-    // 如果没有设置，返回空数组（需要先调用 initialize）
-    return settings;
+    // 主店：自己那几条就是品牌模板
+    if (mainOrgId === tenantId) {
+      return prisma.printSetting.findMany({ where: { tenantId }, orderBy: { ticketType: 'asc' } });
+    }
+
+    /*
+      分店：和 getSettingByType 一样要合并，**列表接口漏了这一步就会全空**。
+
+      分店那条记录只装覆盖项（pickOverrides 砍过），单独拿出来的话
+      sections 里只剩 footer 和 storeInfo —— 后台把没有的键一律渲染成
+      「关」，于是整页开关看着全被关掉了。实测就是这个现象。
+    */
+    const [brandRows, storeRows] = await Promise.all([
+      prisma.printSetting.findMany({ where: { tenantId: mainOrgId }, orderBy: { ticketType: 'asc' } }),
+      prisma.printSetting.findMany({ where: { tenantId }, orderBy: { ticketType: 'asc' } }),
+    ]);
+    const storeByType = new Map(storeRows.map((r) => [r.ticketType, r]));
+
+    // 品牌还没配过这类票据时退回门店自己那条（老数据），和单条接口同一条退路
+    if (brandRows.length === 0) return storeRows;
+
+    return brandRows.map((brand) => {
+      const store = storeByType.get(brand.ticketType);
+      return {
+        ...brand,
+        isEnabled: store?.isEnabled ?? brand.isEnabled,
+        copies: store?.copies ?? brand.copies,
+        config: mergeConfig(brand.config, store?.config),
+      };
+    });
   }
 
   /**
