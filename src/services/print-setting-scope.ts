@@ -92,7 +92,13 @@ export function pickOverrides(config: any): any | null {
   let has = false;
   for (const path of STORE_OVERRIDABLE_PATHS) {
     const v = get(config, path);
-    if (v !== undefined && v !== null) { set(out, path, v); has = true; }
+    /*
+      null 要**保留**，它和「没提交这个字段」不是一回事：
+      门店把纸张从 58 改回「跟随打印机」时发的就是 null，过滤掉的话
+      分店那条里的旧值 58 原地不动，界面上改了却没生效。
+      写进去之后 mergeConfig 那边遇到 null 不覆盖 —— 等于没配，正是想要的。
+    */
+    if (v !== undefined) { set(out, path, v); has = true; }
   }
   return has ? out : null;
 }

@@ -111,6 +111,21 @@ describe('pickOverrides', () => {
     assert.equal(picked.sections.footer.showQrCode, undefined)
   })
 
+  /*
+    门店把纸张改回「跟随打印机」、把第二语言关掉，发的都是 null。
+    当成「没提交」过滤掉的话，分店那条里的旧值原地不动 —— 界面上改了没生效。
+  */
+  test('显式 null 要保留（那是「清除这项覆盖」的意思）', () => {
+    const picked = pickOverrides({ paperWidth: null, secondaryLanguage: null, language: 'fr' })
+    assert.equal(picked.paperWidth, null)
+    assert.equal(picked.secondaryLanguage, null)
+    assert.equal(picked.language, 'fr')
+    // 清除之后合并出来就是「没配」，由下游兜底（纸宽 → 跟打印机走）
+    const merged = mergeConfig({ paperWidth: 80, language: 'en' }, picked)
+    assert.equal(merged.paperWidth, undefined)
+    assert.equal(merged.language, 'fr')
+  })
+
   test('一项可覆盖的都没有 → null（不写空记录）', () => {
     assert.equal(pickOverrides({ sections: { items: { fontSize: 'large' } } }), null)
     assert.equal(pickOverrides(null), null)
