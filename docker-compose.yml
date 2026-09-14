@@ -15,8 +15,8 @@ services:
       - ./certs:/app/certs:ro
     restart: unless-stopped
     networks:
-      - tymoe-network
+      - reall-network
 
 networks:
-  tymoe-network:
+  reall-network:
     external: true
