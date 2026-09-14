@@ -169,7 +169,7 @@ return await prisma.$transaction(async (tx) => {
 Finance Service 已在 Webhook 处理器中实现了调用逻辑，无需修改：
 
 ```typescript
-// tymoe-finance-service/src/modules/payment/services/webhook.service.ts
+// reall-finance-service/src/modules/payment/services/webhook.service.ts
 async notifyOrderService(tenantId: string, orderId: string, status: string) {
   const url = `${env.orderServiceUrl}/api/order/v1/orders/${orderId}/payment-status`;
   const payload = { paymentStatus: status };
@@ -344,11 +344,11 @@ WHERE id = '{orderId}';
 ### Step 1: 启动本地服务
 ```bash
 # Order Service
-cd tymoe-order-service
+cd reall-order-service
 npm run dev
 
 # Finance Service（在另一个终端）
-cd tymoe-finance-service
+cd reall-finance-service
 npm run dev
 ```
 
@@ -401,4 +401,4 @@ curl -X PATCH http://localhost:3002/api/order/v1/orders/{orderId}/payment-status
 ## 参考
 
 - 计划文档：[/Users/meng/.claude/plans/wondrous-coalescing-gosling.md]()
-- Stripe Webhook 处理：[tymoe-finance-service/src/modules/payment/services/webhook.service.ts]()
+- Stripe Webhook 处理：[reall-finance-service/src/modules/payment/services/webhook.service.ts]()

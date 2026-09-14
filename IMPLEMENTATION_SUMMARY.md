@@ -238,7 +238,7 @@ curl -X PATCH http://localhost:3002/api/order/v1/orders/uuid-123/payment-status 
 
 Finance Service 已在 Webhook 处理器中实现了调用逻辑：
 
-**文件**: `tymoe-finance-service/src/modules/payment/services/webhook.service.ts`
+**文件**: `reall-finance-service/src/modules/payment/services/webhook.service.ts`
 
 **方法**: `notifyOrderService()` (行 400-448)
 
@@ -256,7 +256,7 @@ async notifyOrderService(tenantId: string, orderId: string, status: string) {
 ## 📂 修改的文件
 
 ```
-tymoe-order-service/
+reall-order-service/
 ├── src/
 │   ├── services/
 │   │   └── order.service.ts           ← 添加 updatePaymentStatus() 方法
@@ -389,7 +389,7 @@ LIMIT 10;
 - [Payment Status Update 详细指南](PAYMENT_STATUS_UPDATE.md)
 - [计划文档](../../.claude/plans/wondrous-coalescing-gosling.md)
 - [Order Service API](src/routes/order.routes.ts)
-- [Finance Service Webhook](../../tymoe-finance-service/src/modules/payment/services/webhook.service.ts)
+- [Finance Service Webhook](../../reall-finance-service/src/modules/payment/services/webhook.service.ts)
 
 ---
 

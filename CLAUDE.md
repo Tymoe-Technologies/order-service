@@ -3,7 +3,7 @@
 ## 重要参考文档
 
 本项目的API文档和设计文档位于父级目录的 PROJECT_SUMMARY.md 中：
-路径: /Users/meng/Desktop/CODE/Tymoe/PROJECT_SUMMARY.md
+路径: /Users/meng/Desktop/CODE/Reall/PROJECT_SUMMARY.md
 
 ## API 文档维护规则
 

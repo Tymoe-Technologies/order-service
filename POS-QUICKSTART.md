@@ -5,7 +5,7 @@
 ### 步骤 1: 启动 Order Service
 
 ```bash
-cd /Users/meng/Desktop/CODE/Tymoe/tymoe-order-service
+cd /Users/meng/Desktop/CODE/Reall/reall-order-service
 npm run dev
 ```
 

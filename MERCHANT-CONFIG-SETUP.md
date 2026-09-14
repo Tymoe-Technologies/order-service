@@ -9,7 +9,7 @@
 ### 1. 生成 Prisma Client
 
 ```bash
-cd /Users/meng/Desktop/CODE/Tymoe/tymoe-order-service
+cd /Users/meng/Desktop/CODE/Reall/reall-order-service
 npm run prisma:generate
 ```
 
@@ -301,7 +301,7 @@ GET http://localhost:3002/api/order/v1/admin/merchant-configs?page=1&limit=20
 ## 文件结构
 
 ```
-tymoe-order-service/
+reall-order-service/
 ├── shared/
 │   └── database/
 │       └── schema-order.prisma          # 添加了 MerchantOnlineOrderConfig 模型
