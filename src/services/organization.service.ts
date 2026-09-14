@@ -248,6 +248,22 @@ class OrganizationService {
   }
 
   /**
+   * 这个 org 的**主店**（品牌）。分店返回 parentOrgId，主店返回自己。
+   *
+   * 和 resolveMemberOrgId 同一套解析，但用途不同所以分开命名 ——
+   * 那个答的是「会员算在谁名下」，这个答的是「品牌级配置挂在谁身上」。
+   * 解析失败时退回自己：宁可当成独立店（各配各的），也不要把配置写串。
+   */
+  async resolveMainOrgId(orgId: string): Promise<string> {
+    try {
+      const info = await this.getOrganization(orgId);
+      return info?.parentOrgId || orgId;
+    } catch {
+      return orgId;
+    }
+  }
+
+  /**
    * 清除缓存
    */
   clearCache(orgId?: string): void {
