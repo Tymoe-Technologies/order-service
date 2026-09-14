@@ -2308,8 +2308,33 @@ class OrderService {
             updateData.completedAt = new Date();
           } else if (!isUberDelivery) {
             updateData.status = 'CONFIRMED';
+            /*
+              confirmedAt 一直漏了 —— 走 order-status.service 的那条路会写
+              （getStatusTimestampField），而这里是支付回调自己改 status，
+              两条路各写各的。结果是「状态 CONFIRMED 但 confirmedAt 为 null」，
+              报表和审计都答不出这单是什么时候确认的。
+              实测生产订单 260913-P01-1MMU 就是这样。
+            */
+            updateData.confirmedAt = new Date();
           }
           // isUberDelivery: 不改 status，保持 PENDING
+
+          /*
+            状态历史同样要补。没有这条记录时 order_status_history 里查不到
+            PENDING→CONFIRMED 这一跳，整单的时间线从建单直接跳到完成。
+            changedBy 留空：这是支付回调自动推的，没有操作人。
+          */
+          if (updateData.status) {
+            await tx.orderStatusHistory.create({
+              data: {
+                orderId: data.orderId,
+                fromStatus: order.status as any,
+                toStatus: updateData.status as any,
+                reason: '支付成功自动推进',
+                changedAt: new Date(),
+              },
+            });
+          }
         }
         // 生成取餐号（仅在首次标 PAID 且尚未分配时）
         if (!order.pickupNumber) {
