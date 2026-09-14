@@ -33,6 +33,15 @@ export const STORE_OVERRIDABLE_PATHS = [
   'sections.storeInfo.name',
   'sections.storeInfo.address',
   'sections.storeInfo.phone',
+  /*
+    标签纸的规格和打印浓度：和纸宽同理，是**这台机器/这卷纸**的事实。
+    分店用 40×30 的纸而品牌模板写着 50×30，统一了就是印歪或印不下。
+    浓度同理 —— 不同标签纸的显色不一样，要按机器调。
+  */
+  'labelWidth',
+  'labelHeight',
+  'labelGap',
+  'style.printDensity',
 ] as const;
 
 const get = (o: any, path: string): any =>
