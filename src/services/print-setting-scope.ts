@@ -11,7 +11,7 @@
  *
  * 门店能改的只有这些，其余一律跟品牌：
  *   · `isEnabled`   —— 没有标签机的店必须能关掉标签，这是设备现实不是偏好
- *   · `paperWidth`  —— 58mm 的机器印不了 80mm 的版式，统一了会直接印坏
+ *   · `style.printDensity` —— 同一款纸在不同机器上显色深浅不同，要按机器调
  *   · `language` / `secondaryLanguage` —— 温哥华店中文、多伦多店英文；
  *     厨房单的第二语言取决于这家店后厨是谁在看
  *   · 页脚自定义文案 —— 本店会员活动、营业时间这类
@@ -23,7 +23,6 @@
 
 /** 分店能覆盖的 config 字段路径（点号表示嵌套） */
 export const STORE_OVERRIDABLE_PATHS = [
-  'paperWidth',
   'language',
   // 第二语言和主语言同理：厨房里是谁在看，只有这家店知道
   'secondaryLanguage',
@@ -34,13 +33,12 @@ export const STORE_OVERRIDABLE_PATHS = [
   'sections.storeInfo.address',
   'sections.storeInfo.phone',
   /*
-    标签纸的规格和打印浓度：和纸宽同理，是**这台机器/这卷纸**的事实。
-    分店用 40×30 的纸而品牌模板写着 50×30，统一了就是印歪或印不下。
-    浓度同理 —— 不同标签纸的显色不一样，要按机器调。
+    打印浓度留给门店：它不是尺寸，是**这台机器配这卷纸**显色深浅的调节，
+    同一款标签纸在不同机器上也要调。
+
+    纸张尺寸（收据 58/80、标签宽高间距）归品牌 —— 商家决定：
+    旗下门店用同一种纸，票据才长得一样。
   */
-  'labelWidth',
-  'labelHeight',
-  'labelGap',
   'style.printDensity',
 ] as const;
 

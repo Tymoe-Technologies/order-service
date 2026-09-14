@@ -32,7 +32,6 @@ describe('mergeConfig', () => {
     assert.equal(out.sections.footer.showQrCode, true)
     // 门店级的不继承 —— 主店的语言/页脚不该跑到分店单据上
     assert.equal(out.language, undefined)
-    assert.equal(out.paperWidth, undefined)
     assert.equal(out.sections.footer.customMessage, undefined)
     assert.equal(out.sections.storeInfo.name, undefined)
   })
@@ -101,7 +100,6 @@ describe('pickOverrides', () => {
   test('整份 config 进来，只留分店有权改的那几项', () => {
     const picked = pickOverrides(brand())
     assert.equal(picked.language, 'en')
-    assert.equal(picked.paperWidth, 80)
     assert.equal(picked.sections.footer.customMessage, '谢谢惠顾')
     assert.equal(picked.sections.storeInfo.name, '总店')
     // 品牌的东西一个都不能留下
@@ -116,13 +114,12 @@ describe('pickOverrides', () => {
     当成「没提交」过滤掉的话，分店那条里的旧值原地不动 —— 界面上改了没生效。
   */
   test('显式 null 要保留（那是「清除这项覆盖」的意思）', () => {
-    const picked = pickOverrides({ paperWidth: null, secondaryLanguage: null, language: 'fr' })
-    assert.equal(picked.paperWidth, null)
+    const picked = pickOverrides({ secondaryLanguage: null, language: 'fr' })
     assert.equal(picked.secondaryLanguage, null)
     assert.equal(picked.language, 'fr')
-    // 清除之后合并出来就是「没配」，由下游兜底（纸宽 → 跟打印机走）
-    const merged = mergeConfig({ paperWidth: 80, language: 'en' }, picked)
-    assert.equal(merged.paperWidth, undefined)
+    // 清除之后合并出来就是「没配」，由下游兜底（第二语言 → 不印副名）
+    const merged = mergeConfig({ language: 'en', secondaryLanguage: 'zh-CN' }, picked)
+    assert.equal(merged.secondaryLanguage, undefined)
     assert.equal(merged.language, 'fr')
   })
 
@@ -140,9 +137,11 @@ describe('pickOverrides', () => {
     assert.equal(out.sections.footer.customMessage, 'Merci')
   })
 
-  test('路径表里没有 logoUrl / 显示开关这类品牌资产', () => {
+  /* 纸张尺寸是品牌定的：旗下门店用同一种纸，票据才长得一样 */
+  test('路径表里没有 logo / 显示开关 / 纸张尺寸这些品牌项', () => {
     const paths = STORE_OVERRIDABLE_PATHS as readonly string[]
-    for (const forbidden of ['sections.storeInfo.logoUrl', 'sections.storeInfo.showLogo', 'sections.items.fontSize']) {
+    for (const forbidden of ['sections.storeInfo.logoUrl', 'sections.storeInfo.showLogo', 'sections.items.fontSize',
+                             'paperWidth', 'labelWidth', 'labelHeight', 'labelGap']) {
       assert.ok(!paths.includes(forbidden), `${forbidden} 不该让分店改`)
     }
   })
