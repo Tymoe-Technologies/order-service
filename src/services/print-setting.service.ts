@@ -2,6 +2,7 @@ import prisma from '../utils/prisma';
 import { AppError } from '../middleware/errorHandler';
 import logger from '../utils/logger';
 import organizationService from './organization.service';
+import { mergeConfig, pickOverrides } from './print-setting-scope';
 
 /**
  * 深度合并默认值：用默认配置补充现有配置中缺失的字段
@@ -123,32 +124,88 @@ export class PrintSettingService {
   }
 
   /**
-   * 获取某种票据类型的设置
+   * 获取某种票据类型的设置 —— **返回的是品牌模板 + 本店覆盖的合并结果**。
+   *
+   * 票据样式由品牌规定（主店那条记录），分店只能改几项和设备/本地相关的
+   * （语言、纸宽、页脚文案、店名地址电话，见 print-setting-scope）。
+   * 主店自己调用时 main === tenantId，走的还是原来那条路。
    */
   async getSettingByType(tenantId: string, ticketType: string) {
-    const setting = await prisma.printSetting.findUnique({
-      where: {
-        tenantId_ticketType: { tenantId, ticketType: ticketType as any },
-      },
+    const mainOrgId = await organizationService.resolveMainOrgId(tenantId);
+    const brand = await prisma.printSetting.findUnique({
+      where: { tenantId_ticketType: { tenantId: mainOrgId, ticketType: ticketType as any } },
     });
 
-    if (!setting) {
-      throw new AppError(404, 'PRINT_SETTING_NOT_FOUND', `未找到 ${ticketType} 的打印设置，请先初始化`);
+    // 主店自己：它那条就是品牌模板
+    if (mainOrgId === tenantId) {
+      if (!brand) {
+        throw new AppError(404, 'PRINT_SETTING_NOT_FOUND', `未找到 ${ticketType} 的打印设置，请先初始化`);
+      }
+      return brand;
     }
 
-    return setting;
+    const store = await prisma.printSetting.findUnique({
+      where: { tenantId_ticketType: { tenantId, ticketType: ticketType as any } },
+    });
+
+    /*
+      品牌没配过（老数据 / 还没初始化）就退回门店自己那条 ——
+      分层是新加的，不能让已经在用的分店突然没设置可用。
+    */
+    if (!brand) {
+      if (!store) {
+        throw new AppError(404, 'PRINT_SETTING_NOT_FOUND', `未找到 ${ticketType} 的打印设置，请先初始化`);
+      }
+      return store;
+    }
+
+    return {
+      ...brand,
+      // 这两项按门店：没有标签机的店必须能关掉标签
+      isEnabled: store?.isEnabled ?? brand.isEnabled,
+      copies: store?.copies ?? brand.copies,
+      config: mergeConfig(brand.config, store?.config),
+    };
   }
 
   /**
    * 更新打印设置
    */
   async updateSetting(tenantId: string, ticketType: string, data: { isEnabled?: boolean; copies?: number; config?: object }, token?: string) {
+    /*
+      分店提交的 config 只取它有权改的那几项。
+
+      后台 UI 现在发的是**整份** config（它还没分层），不过滤的话分店一保存
+      就把品牌那套样式原样抄成自己的覆盖项，分层等于没有。
+      过滤放在服务端，UI 改不改都不影响正确性。
+    */
+    const mainOrgId = await organizationService.resolveMainOrgId(tenantId);
+    const isBranch = mainOrgId !== tenantId;
+    if (isBranch && data.config !== undefined) {
+      data = { ...data, config: pickOverrides(data.config) ?? undefined };
+    }
+
     // 先检查是否存在
-    const existing = await prisma.printSetting.findUnique({
+    let existing = await prisma.printSetting.findUnique({
       where: {
         tenantId_ticketType: { tenantId, ticketType: ticketType as any },
       },
     });
+
+    /*
+      分店第一次改：它可能根本没有自己那条记录（设置一直是从品牌继承的）。
+      现建一条空的来装覆盖项，而不是报 404 让人去「初始化」——
+      那会建出一份全量副本，正是分层要避免的。
+    */
+    if (!existing && isBranch) {
+      // upsert 而不是 create：同一家分店两台机同时保存时不会撞唯一键
+      existing = await prisma.printSetting.upsert({
+        where: { tenantId_ticketType: { tenantId, ticketType: ticketType as any } },
+        // as any：ticketType 在这个方法里是 string，而 Prisma 要枚举
+        create: { tenantId, ticketType, isEnabled: true, config: {} } as any,
+        update: {},
+      });
+    }
 
     if (!existing) {
       throw new AppError(404, 'PRINT_SETTING_NOT_FOUND', `未找到 ${ticketType} 的打印设置，请先初始化`);
