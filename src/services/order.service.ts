@@ -607,6 +607,8 @@ class OrderService {
       // 消息中的 orderId 仅用于幂等性检查，不作为数据库记录 ID
 
       let subtotal = 0;
+      /** 耗材（餐具/购物袋/打包费）小计。它不参与任何折扣，要从折扣基数里扣掉 */
+      let supplySubtotal = 0;
       let orderItems;
       
       // 根据客户端入口决定是否需要验证价格
@@ -641,6 +643,8 @@ class OrderService {
           // 商品总价 = 单价×数量 - 商品折扣
           const totalPrice = itemTotal - itemDiscountAmount;
           subtotal += totalPrice;
+          // 耗材不参与任何折扣，单独记一份供渠道折扣扣除（见 calcChannelDiscount 的调用）
+          if (item.isSupply) supplySubtotal += totalPrice;
 
           return {
             itemId: item.itemId,
@@ -720,8 +724,16 @@ class OrderService {
         }
 
         const rules = channelConfig.checkoutRules as any;
-        // 基数是整单折扣之后的小计，且必须和 POS 算出同一个数 —— 见 calcChannelDiscount
-        channelDiscountAmount = calcChannelDiscount(rules?.orderDiscount, subtotal, orderLevelDiscount);
+        /*
+          基数 = 小计 − 耗材 − 整单折扣，且必须和 POS 算出同一个数。
+          耗材是按份收的成本转嫁，不拿来做促销 —— 三种折扣一律不碰它
+          （POS 侧同规则，见 CheckoutScreen 的 discountableSubtotal）。
+        */
+        channelDiscountAmount = calcChannelDiscount(
+          rules?.orderDiscount,
+          Math.max(0, subtotal - supplySubtotal),
+          orderLevelDiscount,
+        );
 
         // 记账模式：支付方式强制覆盖为 ACCOUNT
         if (channelConfig.checkoutMode === 'CREDIT_ACCOUNT') {

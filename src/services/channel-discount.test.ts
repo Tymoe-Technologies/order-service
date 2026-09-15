@@ -35,6 +35,15 @@ describe('calcChannelDiscount', () => {
     assert.equal(calcChannelDiscount(PCT20, 424, 999), 0)
   })
 
+  it('耗材已在调用方扣除：基数传的是「小计 − 耗材」', () => {
+    /*
+      order.service 传进来的 subtotal 已经减过耗材（supplySubtotal），
+      这里只负责再减整单折扣。举例：商品 399 + 袋子 25，券减 40 →
+      调用方传 subtotal=399、orderLevelDiscount=40 → round(359×20%)=72
+    */
+    assert.equal(calcChannelDiscount(PCT20, 399, 40), 72)
+  })
+
   it('规则没开 / 缺字段 → 0', () => {
     assert.equal(calcChannelDiscount(null, 424, 0), 0)
     assert.equal(calcChannelDiscount({ enabled: false, type: 'PERCENTAGE', value: 20 }, 424, 0), 0)
