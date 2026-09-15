@@ -57,6 +57,19 @@ export const createOrderSchema = Joi.object({
         specialNotes: Joi.string().optional().allow(null),
 
         /*
+          这一行自己的税种明细。形状和订单头那份一样（见下面的 taxLines）。
+          Joi 默认拒绝未知字段 —— POS 一开始发这个字段，这里不放行整个请求就 400，
+          收了钱的单落不了库。
+        */
+        taxLines: Joi.array().items(
+          Joi.object({
+            name: Joi.string().max(40).required(),
+            rate: Joi.number().min(0).max(1).required(),
+            amount: Joi.number().integer().min(0).required(),
+          }),
+        ).optional(),
+
+        /*
           耗材行（餐具 / 购物袋 / 打包费）。itemId 存的是 catalog_supplies.id。
           不放行的话 Joi 会把整个请求打成 400 —— POS 就是这么一直没能带耗材下单的。
         */

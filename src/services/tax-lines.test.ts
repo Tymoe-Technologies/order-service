@@ -6,9 +6,9 @@
  * 而退回「只印一个合计」至少是对的。
  */
 
-import { test, describe } from 'node:test'
+import { test, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { sanitizeTaxLines, aggregateTaxLines } from './tax-lines'
+import { sanitizeTaxLines, aggregateTaxLines, sanitizeItemTaxLines } from './tax-lines'
 
 const GST = { name: 'GST', rate: 0.05, amount: 500 }
 const PST = { name: 'PST', rate: 0.07, amount: 700 }
@@ -92,5 +92,49 @@ describe('aggregateTaxLines', () => {
 
   test('一张明细都没有 → complete=false', () => {
     assert.equal(aggregateTaxLines([{ taxAmount: 500, taxLines: null }]).complete, false)
+  })
+})
+
+describe('sanitizeItemTaxLines', () => {
+  const GST = { name: 'GST', rate: 0.05, amount: 47 }
+  const PST = { name: 'PST', rate: 0.08, amount: 4 }
+
+  it('各行加起来等于整单税额 → 全部保留', () => {
+    // 奶茶只收 GST 47，两个耗材各收 PST 2 —— 合计 51 = 订单头税额
+    const r = sanitizeItemTaxLines(
+      [[GST], [{ ...PST, amount: 2 }], [{ ...PST, amount: 2 }]],
+      51,
+    )
+    assert.deepEqual(r[0], [GST])
+    assert.equal(r[1]![0].amount, 2)
+    assert.equal(r[2]![0].amount, 2)
+  })
+
+  it('无税的行传 null，不影响求和', () => {
+    const r = sanitizeItemTaxLines([[GST], null, undefined], 47)
+    assert.deepEqual(r[0], [GST])
+    assert.equal(r[1], null)
+    assert.equal(r[2], null)
+  })
+
+  it('差 1 分容掉（逐行取整所致）', () => {
+    const r = sanitizeItemTaxLines([[GST]], 48)
+    assert.deepEqual(r[0], [GST])
+  })
+
+  it('加不平就**整单**丢掉，不是只丢有问题那一行', () => {
+    // 行级合计 51，订单头却是 80 —— 少了 29，这份明细不可信
+    const r = sanitizeItemTaxLines([[GST], [PST]], 80)
+    assert.deepEqual(r, [null, null])
+  })
+
+  it('一行都没有明细时原样返回（本来就没有，不是出错）', () => {
+    const r = sanitizeItemTaxLines([null, null], 51)
+    assert.deepEqual(r, [null, null])
+  })
+
+  it('形状不合法的行让整单作废（名字为空）', () => {
+    const r = sanitizeItemTaxLines([[{ name: '', rate: 0.05, amount: 47 }], [PST]], 51)
+    assert.deepEqual(r, [null, null])
   })
 })

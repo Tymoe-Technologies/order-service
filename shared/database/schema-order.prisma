@@ -271,6 +271,16 @@ model OrderItem {
   comboId        String?  @map("combo_id") @db.Uuid
   comboSelections Json?   @map("combo_selections") @db.Json
 
+  /// **这一行**的税种明细：`[{ name, rate, amount }]`（amount 单位分）。
+  ///
+  /// 订单头的 tax_lines 只说得出「这单收了 47 分 GST」，说不出是哪个商品收的。
+  /// 有了行级的才能事后核回去，也才能在**部分退款**时按行退对税种 ——
+  /// 按整单税额比例摊，会把 GST 的奶茶和 PST 的杯子摊成同一个混合税率。
+  ///
+  /// null = 没有明细（存量行、老版本 POS）。和订单头同一个规矩：
+  /// 拆不全就别拆，退回只看合计。
+  taxLines       Json?    @map("tax_lines") @db.Json
+
   order          Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
   orderItemModifiers OrderItemModifier[]
 

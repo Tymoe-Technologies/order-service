@@ -4,7 +4,7 @@ import { IN_STORE_PICKUP_TYPES } from './fulfillment-option.service';
 import { AppError } from '../middleware/errorHandler';
 import { runWithIdempotency, fingerprintOf } from './idempotency.service';
 import { toE164 } from '../utils/phone';
-import { sanitizeTaxLines } from './tax-lines';
+import { sanitizeTaxLines, sanitizeItemTaxLines } from './tax-lines';
 import { getConsumerIdByMemberId } from '../utils/member-client';
 import { enqueueEvent } from './outbox.service';
 import logger from '../utils/logger';
@@ -140,6 +140,13 @@ interface CreateOrderItem {
     quantity: number;
   }>;
   specialNotes?: string;
+
+  /**
+   * 这一行自己的税种明细 `[{ name, rate, amount }]`（分）。
+   * 落 order_items.tax_lines，用于事后核账和按行退税（见那一列的说明）。
+   * 全部行的和必须等于整单 taxAmount，否则整单丢掉（sanitizeItemTaxLines）。
+   */
+  taxLines?: Array<{ name: string; rate: number; amount: number }>;
 
   /*
     耗材行（餐具 / 购物袋 / 打包费）。itemId 存的是 catalog_supplies.id，
@@ -651,6 +658,8 @@ class OrderService {
             attributes: item.attributes || null,
             modifiers: null,  // 不再写 JSON，改用 OrderItemModifier 关系表
             specialNotes: item.specialNotes || null,
+            // 行级税种明细。**先原样带着**，下面按整单税额统一校验后再定去留
+            taxLines: item.taxLines ?? null,
 
             /*
               耗材行：itemId 是 catalog_supplies.id 而不是 catalog_items.id，
@@ -667,6 +676,19 @@ class OrderService {
 
       // 提取费用字段（POS/KIOSK 可信来源，使用前端传来的值）
       const taxAmount = data.taxAmount || 0;
+
+      /*
+        行级税种明细统一校验：所有行加起来必须等于整单税额，否则**整单**丢掉。
+        留半份最危险 —— 拿它做部分退款时剩下的行看着是齐的，税却少一块。
+        校验放在这里而不是构造每行时：判据是整单的和，得先把行都算完。
+      */
+      if (orderItems) {
+        const verified = sanitizeItemTaxLines(
+          orderItems.map((it: any) => it.taxLines),
+          Math.round(taxAmount),
+        );
+        orderItems.forEach((it: any, i: number) => { it.taxLines = verified[i] ?? null; });
+      }
       const serviceFee = data.serviceFee || 0;
       const deliveryFee = data.deliveryFee || 0;
       const platformFee = data.platformFee || 0;

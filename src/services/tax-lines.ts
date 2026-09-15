@@ -90,3 +90,37 @@ export function aggregateTaxLines(
 
   return { lines, complete: lines.length > 0 && Math.abs(covered - totalTax) <= 1 };
 }
+
+/**
+ * 验并规整**行级**税种明细（order_items.tax_lines）。
+ *
+ * 判据只有一条：所有行的明细加起来必须等于订单头的税额（容 1 分）。
+ * 对不上就**整单**退回 null —— 不是只丢有问题的那一行。
+ * 留半份的后果是：拿行级明细做部分退款时，剩下那些行看着是齐的，
+ * 退出来的税却少一块，而且没有任何迹象。
+ *
+ * 无税的行（免税耗材）本来就没有明细，传 null / 空数组即可 ——
+ * 它们不参与求和，所以不会把校验带偏。
+ *
+ * ⚠️ 只在 order-service 用，finance 那份副本不需要这个函数。
+ */
+export function sanitizeItemTaxLines(
+  itemLines: Array<unknown>,
+  orderTaxAmount: number,
+): Array<TaxLine[] | null> {
+  const cleaned = itemLines.map((raw) => {
+    if (!Array.isArray(raw) || raw.length === 0) return null;
+    // 用这一行自身之和当基准 = 只做形状校验（名字、数值、非负）
+    const selfSum = raw.reduce((a: number, l: any) => a + Math.round(Number(l?.amount) || 0), 0);
+    return sanitizeTaxLines(raw, selfSum);
+  });
+
+  const total = cleaned.reduce(
+    (a, ls) => a + (ls ?? []).reduce((b, l) => b + l.amount, 0),
+    0,
+  );
+  if (cleaned.every((l) => l === null)) return cleaned;      // 一行都没有：本来就没明细
+  if (Math.abs(total - orderTaxAmount) > 1) return itemLines.map(() => null);
+
+  return cleaned;
+}
