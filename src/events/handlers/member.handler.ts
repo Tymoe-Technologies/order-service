@@ -6,11 +6,11 @@
  */
 
 import type { IEventBus } from '../event-bus';
-import type { OrderCompletedEvent, OrderPaidEvent, CouponUseRequestedEvent } from '../types';
+import type { OrderCompletedEvent, OrderPaidEvent, CouponUseRequestedEvent, CouponRestoreRequestedEvent } from '../types';
 import logger from '../../utils/logger';
 import organizationService from '../../services/organization.service';
 // 和 order.service 的建单流程共用同一份 —— 两条路都要核销券，别各写一份
-import { useGrantedReward } from '../../utils/member-client';
+import { useGrantedReward, restoreGrantedReward } from '../../utils/member-client';
 
 const MEMBER_SERVICE_URL = process.env.MEMBER_SERVICE_URL || 'http://localhost:7006';
 const INTERNAL_SERVICE_KEY = process.env.INTERNAL_SERVICE_KEY || '';
@@ -173,6 +173,18 @@ export function registerMemberHandler(bus: IEventBus): void {
     const e = event as CouponUseRequestedEvent;
     if (!e.grantedRewardId) return;
     await useGrantedReward({ grantedRewardId: e.grantedRewardId, orderId: e.orderId });
+  });
+
+  /*
+    券退回。整单取消 / 全额退款时发，和核销走同一套发件箱。
+
+    不 catch：失败要让 outbox 重试。/restore 对「券不存在 / 已 ACTIVE /
+    已被商家作废」都返回 200，重试不会死循环。
+  */
+  bus.on('COUPON_RESTORE_REQUESTED', async function member_COUPON_RESTORE_REQUESTED(event) {
+    const e = event as CouponRestoreRequestedEvent;
+    if (!e.grantedRewardId) return;
+    await restoreGrantedReward({ grantedRewardId: e.grantedRewardId, orderId: e.orderId });
   });
 
   /*

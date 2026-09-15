@@ -93,6 +93,19 @@ export interface CouponUseRequestedEvent extends BaseEvent {
   grantedRewardId: string;
 }
 
+/**
+ * 「把这张券退回去」。整单取消 / 全额退款时发。
+ *
+ * 和核销走同一套发件箱：直接 fetch 是 fire-and-forget，member-service
+ * 那一刻不可达就永久丢了，顾客白搭一张券。
+ *
+ * 有效期由 member-service 按「被占用的时长」补偿，这里不用带。
+ */
+export interface CouponRestoreRequestedEvent extends BaseEvent {
+  type: 'COUPON_RESTORE_REQUESTED';
+  grantedRewardId: string;
+}
+
 // 事件联合类型
 export type OrderEvent =
   | OrderCreatedEvent
@@ -100,4 +113,5 @@ export type OrderEvent =
   | TemporaryOrderCreatedEvent
   | OrderPaidEvent
   | OrderCompletedEvent
-  | CouponUseRequestedEvent;
+  | CouponUseRequestedEvent
+  | CouponRestoreRequestedEvent;

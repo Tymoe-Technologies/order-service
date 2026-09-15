@@ -12,7 +12,7 @@ import logger from '../utils/logger';
 import { assertCreditAvailable } from './credit.service';
 import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
 import { eventBus } from '../events';
-import { getMemberIdByConsumerId, validateGrantedRewardForMember, parseGrantedRewardId, restoreGrantedReward } from '../utils/member-client';
+import { getMemberIdByConsumerId, validateGrantedRewardForMember, parseGrantedRewardId } from '../utils/member-client';
 import { broadcastOrderStatusChanged } from '../websocket/print-task-dispatcher';
 import organizationService from './organization.service';
 import { getRefundsByOrderId } from './refund.service';
@@ -1688,41 +1688,45 @@ class OrderService {
     const validReasons = ['MERCHANT_REQUEST', 'CUSTOMER_REQUEST', 'OUT_OF_STOCK', 'DUPLICATE_ORDER', 'PAYMENT_FAILED', 'SYSTEM_CANCEL'];
     const cancellationReason = validReasons.includes(reason) ? reason as any : 'MERCHANT_REQUEST';
 
-    await prisma.order.update({
-      where: { id: orderId },
-      data: {
-        status: 'CANCELLED',
-        cancelledAt: new Date(),
-        cancellationReason,
-      },
-    });
-
     /*
-      ★ 把会员券退回去。
+      ★ 取消订单 + 退回会员券，**同一个事务**。
 
-      这单没做成，顾客不该白搭一张券 —— 尤其 POS 上的取消基本都是店家
-      发起的（缺货、做错了、点错了）。
+      这单没做成，顾客不该白搭一张券 —— POS 上的取消基本都是店家发起的
+      （缺货、做错了、点错了）。有效期由 member-service 按「被占用的时长」
+      补偿，见那边的 computeRestoredExpiry。
 
-      有效期由 member-service 补偿「被占用的时长」：券锁在这张单上的
-      这段时间顾客没法用，原样加回到期时间。所以不需要为不同有效期的券
-      各定一个宽限期，也无法靠「下单占住券」续期（那段时间券本来就不可用）。
+      退券走发件箱而不是直接 fetch：后者是 fire-and-forget，
+      member-service 那一刻不可达就永久丢了。写进同一个事务之后，
+      订单被取消 ⟺ 退券任务一定在板上，投递失败由 relay 退避重试。
 
       只在**整单取消**这条路上退。部分退款不退 —— 那笔交易还在，
       折扣已经体现在里面了。
-
-      失败不阻塞取消（订单已经改完了），只记日志。member-service 的
-      /restore 对「券不存在 / 已 ACTIVE / 已被商家作废」都返回 200，
-      所以这里几乎只会在服务不可达时失败。
     */
     const grId = parseGrantedRewardId(order.discountReason);
-    if (grId) {
-      restoreGrantedReward({ grantedRewardId: grId, orderId })
-        .catch((err) => logger.warn('[OrderService] 券退回失败（非致命）', {
-          orderId, grantedRewardId: grId, err,
-        }));
-    }
+    await prisma.$transaction(async (tx) => {
+      await tx.order.update({
+        where: { id: orderId },
+        data: {
+          status: 'CANCELLED',
+          cancelledAt: new Date(),
+          cancellationReason,
+        },
+      });
 
-    logger.info(`Order cancelled: ${orderId}`, { cancellationReason });
+      if (grId) {
+        await enqueueEvent(tx, {
+          type: 'COUPON_RESTORE_REQUESTED',
+          eventId: uuidv4(),
+          timestamp: new Date(),
+          tenantId,
+          orderId,
+          orderNumber: order.orderNumber,
+          grantedRewardId: grId,
+        });
+      }
+    });
+
+    logger.info(`Order cancelled: ${orderId}`, { cancellationReason, grantedRewardId: grId });
   }
 
   /**
