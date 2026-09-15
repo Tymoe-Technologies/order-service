@@ -120,6 +120,22 @@ export function registerMemberHandler(bus: IEventBus): void {
     if (!e.memberId) return;
     if (!e.subtotal) return;
 
+    /*
+      ★ 券核销放在积分**之前**。
+
+      两件事的后果不对称：积分没加，顾客下次还能补；券没核销，同一张券
+      能被反复使用，每次都真金白银少收一笔。
+
+      而 callEarnPoints **会抛**（member-service 非 2xx 就 throw），
+      原来券核销排在它后面 —— 积分接口一挂，券就跟着不核销了。
+      顺序换过来之后，积分失败不再牵连券。
+    */
+    // **不 catch**：失败要让 outbox 看见，退避重试直到核销成功。
+    // 吞掉的话这张券就永远留在 ACTIVE，能被反复使用。
+    if (e.grantedRewardId) {
+      await useGrantedReward({ grantedRewardId: e.grantedRewardId, orderId: e.orderId });
+    }
+
     // 会员体系归属主店：分店下单时用 parentOrgId 调 member-service
     const memberOrgId = await organizationService.resolveMemberOrgId(e.tenantId);
 
@@ -134,16 +150,6 @@ export function registerMemberHandler(bus: IEventBus): void {
       source: e.clientOrigin === 'WEB' ? 'ONLINE_ORDER' : 'STAFF_APP',
       ...(await resolveStore(e.tenantId)),
     });
-
-    // 支付成功后标记 GrantedReward 为 USED（非致命，失败只记日志）
-    if (e.grantedRewardId) {
-      await useGrantedReward({
-        grantedRewardId: e.grantedRewardId,
-        orderId: e.orderId,
-      }).catch(err => {
-        logger.warn('[MemberHandler] callUseGrantedReward 异常（非致命）', { err });
-      });
-    }
 
     logger.info('[MemberHandler] ORDER_PAID 积分处理完成', {
       clientOrigin: e.clientOrigin,
@@ -175,6 +181,12 @@ export function registerMemberHandler(bus: IEventBus): void {
       return;
     }
 
+    // 券核销放在积分之前，理由同 ORDER_PAID 那支
+    // 不 catch，理由同 ORDER_PAID 那支：要让 outbox 重试
+    if (e.grantedRewardId) {
+      await useGrantedReward({ grantedRewardId: e.grantedRewardId, orderId: e.orderId });
+    }
+
     // 会员体系归属主店：分店下单时用 parentOrgId 调 member-service
     const memberOrgId = await organizationService.resolveMemberOrgId(e.tenantId);
 
@@ -188,16 +200,6 @@ export function registerMemberHandler(bus: IEventBus): void {
       source: 'STAFF_APP',
       ...(await resolveStore(e.tenantId)),
     });
-
-    // POS 同步流程使用了会员券 → 标记为 USED(非致命,失败仅记日志)
-    if (e.grantedRewardId) {
-      await useGrantedReward({
-        grantedRewardId: e.grantedRewardId,
-        orderId: e.orderId,
-      }).catch((err) => {
-        logger.warn('[MemberHandler] callUseGrantedReward (POS) 异常,非致命', { err, orderId: e.orderId });
-      });
-    }
 
     logger.info('[MemberHandler] ORDER_COMPLETED 积分处理完成', {
       orderId: e.orderId,

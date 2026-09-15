@@ -128,16 +128,27 @@ export async function useGrantedReward(params: {
     body: JSON.stringify({ grantedRewardId: params.grantedRewardId, orderId: params.orderId }),
   });
 
+  /*
+    ★ 失败**抛出**，由调用方决定怎么办。
+
+    原来这里是「只记 warn 不抛」，于是事件 handler 外面那层 `.catch` 成了摆设：
+    handler 不抛 → outbox 判定投递成功 → **永远不会重试** → 券就此漏掉。
+    而隔壁 callEarnPoints 是抛的，所以积分反而有重试保障 —— 后果轻的那个
+    有兜底，后果重的那个没有。
+
+    现在两个调用方各按自己的场景处理：
+      · 事件 handler  —— 不 catch，让它抛，outbox 会退避重试直到成功
+      · 建单流程      —— catch 掉，钱和订单已经落定，不能因为核销失败回滚下单
+  */
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    logger.warn('[MemberClient] 奖励标记失败（非致命）', {
-      grantedRewardId: params.grantedRewardId, status: res.status, body,
-    });
-  } else {
-    logger.info('[MemberClient] 奖励已标记为 USED', {
-      grantedRewardId: params.grantedRewardId, orderId: params.orderId,
-    });
+    throw new Error(
+      `useGrantedReward failed: ${res.status} ${JSON.stringify(body)} (grantedRewardId=${params.grantedRewardId})`,
+    );
   }
+  logger.info('[MemberClient] 奖励已标记为 USED', {
+    grantedRewardId: params.grantedRewardId, orderId: params.orderId,
+  });
 }
 
 /** 从 `GrantedReward:<id>` 这种 discountReason 里抠出券 id。不是这个形状就返回 null */
