@@ -34,6 +34,24 @@ const LEASE_SECONDS = 300;
 /** 退避上限。超过这个就固定间隔重试，别退到几小时后 */
 const MAX_BACKOFF_SECONDS = 600;
 
+/*
+  TODO: 死信处理（dead letter）。
+
+  现在**没有任何重试上限** —— 一条投不出去的事件会每 600 秒重试一次，
+  永远。一年 5 万次无效请求 + 等量的错误日志，而且它一直躺在待投递里，
+  清理任务也不会碰它（purgePublishedEvents 只删已投递的，那是对的：
+  待投递 = 还没做完的活，不能悄悄丢）。
+
+  一个 handler 里的 bug 就能造出这种事件，目前只能靠人盯日志发现。
+
+  要做的话：attempts 超过阈值（50 次 ≈ 半天）就标记成 dead 停止重试，
+  同时发告警。表上加个状态列，或者直接在认领条件里加 `attempts < N`
+  并配一个「有多少条卡死了」的监控查询。
+
+  暂缓的判断：当前待投递恒为 0，还没真正暴露过。等第一次遇到再做，
+  那时也才知道告警该往哪发。
+*/
+
 /** 能写库的东西：普通 client 或事务 client 都行 */
 type Db = Prisma.TransactionClient | typeof prisma;
 
