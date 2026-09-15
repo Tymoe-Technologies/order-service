@@ -1288,14 +1288,24 @@ router.post('/channel-credit/settle', internalAuth, async (req: Request, res: Re
  * GET /internal/orders/:orderId —— 平台内部按订单 id 或订单号查订单（跨租户）。
  * 供 admin-bff 上帝视角"业务视图"下钻用。放在文件末尾，确保不与更具体的
  * /orders/reconciliation 等路由冲突。
+ *
+ * `?tenantId=` 可选：订单号只在门店内唯一，跨组织重号时用它消歧。
+ * 不带而又撞上重号，返回 409 + `details.candidates`（见 getOrderByIdInternal）。
  */
 router.get('/orders/:orderId', internalAuth, async (req: Request, res: Response) => {
   try {
-    const order = await orderService.getOrderByIdInternal(req.params.orderId);
+    const tenantId = typeof req.query.tenantId === 'string' ? req.query.tenantId : undefined;
+    const order = await orderService.getOrderByIdInternal(req.params.orderId, tenantId);
     res.json({ success: true, data: order });
   } catch (error: any) {
     const status = error?.statusCode || (error?.code === 'ORDER_NOT_FOUND' ? 404 : 500);
-    res.status(status).json({ success: false, error: error?.message || '查询失败' });
+    // code / details 必须透出：调用方要靠 ORDER_NUMBER_AMBIGUOUS + candidates 做消歧
+    res.status(status).json({
+      success: false,
+      error: error?.message || '查询失败',
+      code: error?.code,
+      details: error?.details,
+    });
   }
 });
 

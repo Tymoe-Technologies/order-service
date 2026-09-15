@@ -1235,26 +1235,70 @@ class OrderService {
    * 与 getOrderById 的区别：跨租户（平台方可查任意商户订单），且 UUID / 人类订单号都能查。
    * 仅经 internalAuth（x-service-api-key）的内部接口调用，不对外暴露。
    */
-  async getOrderByIdInternal(idOrNumber: string) {
+  async getOrderByIdInternal(idOrNumber: string, tenantId?: string) {
     // id 是 Postgres UUID 列，直接拿非 UUID 字符串按 id 查会导致数据库报错，
     // 所以只有输入是合法 UUID 时才按 id 匹配，否则只按订单号匹配
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idOrNumber);
-    const where = isUuid
+    const match = isUuid
       ? { OR: [{ id: idOrNumber }, { orderNumber: idOrNumber }] }
       : { orderNumber: idOrNumber };
-    const order = await prisma.order.findFirst({
-      where,
+
+    /*
+      ★ 按订单号查必须消歧。
+
+      订单号只保证**门店内**唯一（schema 的 `@@unique([tenantId, orderNumber])`），
+      两个组织同一秒、同一设备码各开一单就会拿到一模一样的号。
+
+      这里原来是 `findFirst` 且没有 orderBy —— 重号时 Postgres 按自己的扫描顺序
+      给第一条，返回的那单金额、商品、状态全都自洽，只是可能属于另一家店，
+      排查的人看不出来。而 admin-bff 会拿这一条的 id 当 resolvedOrderId 再去查
+      finance / member / Loki，于是整条链路视图**一致地**指向错的组织
+      （见 transactionAggregator.getTransactionView）。
+
+      所以：命中多条就报 409 并带上候选，让调用方指定 tenantId，
+      或者直接拿候选里的 id 重查 —— 那是主键，全平台唯一，没有歧义。
+      按 id 查的路径不受影响。
+
+      take: 3 —— 只为判断"有没有歧义"和列出候选。重号是罕见路径，
+      正常只有一条，开销和原来的 findFirst 一样。
+    */
+    const orders = await prisma.order.findMany({
+      where: tenantId ? { AND: [match, { tenantId }] } : match,
       include: {
         orderItems: { include: { orderItemModifiers: true } },
         orderNotes: { orderBy: { createdAt: 'desc' } },
         analytics: true,
       },
+      take: 3,
     });
 
-    if (!order) {
+    if (orders.length === 0) {
       throw new AppError(404, 'ORDER_NOT_FOUND', '订单不存在');
     }
 
+    if (orders.length > 1) {
+      // 组织名让运营一眼能选（organizationService 有 5 分钟缓存，候选只有两三条）
+      const candidates = await Promise.all(orders.map(async (o) => ({
+        orderId: o.id,
+        tenantId: o.tenantId,
+        orgName: (await organizationService.getOrganization(o.tenantId))?.orgName ?? null,
+        orderNumber: o.orderNumber,
+        createdAt: o.createdAt,
+        totalAmount: o.totalAmount,
+      })));
+      logger.warn('[Internal] 订单号跨组织重号，要求调用方消歧', {
+        orderNumber: idOrNumber,
+        tenantIds: candidates.map((c) => c.tenantId),
+      });
+      throw new AppError(
+        409,
+        'ORDER_NUMBER_AMBIGUOUS',
+        `订单号 ${idOrNumber} 在多个组织下都存在，请指定 tenantId，或改用候选中的订单 id 查询`,
+        { candidates },
+      );
+    }
+
+    const order = orders[0];
     const storeTimezone = await organizationService.getStoreTimezone(order.tenantId);
     return { ...order, storeTimezone };
   }
