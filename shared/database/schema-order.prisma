@@ -267,6 +267,40 @@ model Order {
   @@map("orders")
 }
 
+/// # order_items：20 列，真正的坑只有一个 —— **耗材行**
+///
+/// 餐具 / 购物袋 / 打包费当成普通商品行落在这张表里（`lineKind = SUPPLY`），
+/// 是为了不另开一条并行的账：购物车、税费、小票、建单全是围绕商品行写的。
+/// 代价是**每一个「按商品」的口径都得记得排除它**，忘了就静默出错：
+///
+///   · 商品件数把打包费也数进去
+///   · 每个购物袋各出一张标签
+///   · 厨房单上出现「1× 打包费」
+///   · 折扣基数含耗材 → 打包袋跟着打折
+///   · 折扣按比例摊到耗材行 → 耗材的税基被打薄，税少收
+///
+/// 前三个在 POS 的 utils/supplyLine.ts 注释里记着「真的发生过」，
+/// 后两个是 2026-09 修的。判定统一走那里的 `isSupplyLine` / `productLinesOnly`，
+/// **别在调用点各写一遍** —— 它要认两种形状：
+///   POS 购物车行  `{ product: { isSupply } }`
+///   后端订单行    `{ lineKind: 'SUPPLY' }`
+/// 续收流程曾经漏传 isSupply，于是打包袋又出了一次标签（同一个坑换条路复发）。
+///
+/// | 分组 | 说明 |
+/// |---|---|
+/// | 身份 | itemId（商品行=catalog_items.id，耗材行=catalog_supplies.id，**不是一张表**） |
+/// | 快照 | itemName、categoryId、unitPrice —— 冻结在下单那刻，商品改名/改价/换分类都不影响历史单 |
+/// | 金额 | unitPrice（**含**选项加价，不含折扣）、totalPrice（= 单价×数量 − 单项折扣） |
+/// | 行分类 | lineKind（PRODUCT / SUPPLY）、supplyOrigin（auto=系统加的 / selected=店员点的） |
+/// | 单项折扣 | discountAmount / Type / Value / Reason —— 只是这一行的，整单折扣在 orders 上 |
+/// | 选项 | orderItemModifiers（关系表，**新数据走这里**）、modifiers（旧 JSON，只读兼容）、attributes |
+/// | 套餐 | comboId、comboSelections —— 子项快照，不进 orderItemModifiers（那表的字段语义对不上） |
+/// | 税 | taxLines：**这一行**的税种明细。全部行加起来必须等于 orders.taxAmount，否则整单作废（sanitizeItemTaxLines） |
+///
+/// ## categoryId 为什么是快照
+/// 厨房单的分类级路由靠它（PrintRoute matchType=CATEGORY）。出单时去
+/// item-management 查有两个问题：把网络依赖加进出单路径，它挂了厨房就停摆；
+/// 商品改分类后历史单的归属会跟着变。
 model OrderItem {
   id             String  @id @default(uuid()) @db.Uuid
   orderId        String  @map("order_id") @db.Uuid
