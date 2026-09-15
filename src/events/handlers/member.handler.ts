@@ -6,7 +6,7 @@
  */
 
 import type { IEventBus } from '../event-bus';
-import type { OrderCompletedEvent, OrderPaidEvent } from '../types';
+import type { OrderCompletedEvent, OrderPaidEvent, CouponUseRequestedEvent } from '../types';
 import logger from '../../utils/logger';
 import organizationService from '../../services/organization.service';
 // 和 order.service 的建单流程共用同一份 —— 两条路都要核销券，别各写一份
@@ -156,6 +156,23 @@ export function registerMemberHandler(bus: IEventBus): void {
       orderId: e.orderId,
       memberId: e.memberId,
     });
+  });
+
+  /*
+    券核销的**独立通道**。挂账 / 平台单建单即 PAID，ORDER_PAID 那支
+    对它们从来不发，所以建单流程会 enqueue 这个事件。
+
+    走 outbox 而不是在建单流程里直接 fetch：直接调是 fire-and-forget，
+    member-service 那一刻不可达就永久丢了 —— 而券漏核销意味着它能被反复使用。
+    进了发件箱就有退避重试兜着（见 outbox.service）。
+
+    不 catch：失败要让 outbox 看见。/use 端点对「已 USED / 券不存在」
+    都返回 200，所以重试不会死循环。
+  */
+  bus.on('COUPON_USE_REQUESTED', async function member_COUPON_USE_REQUESTED(event) {
+    const e = event as CouponUseRequestedEvent;
+    if (!e.grantedRewardId) return;
+    await useGrantedReward({ grantedRewardId: e.grantedRewardId, orderId: e.orderId });
   });
 
   /*

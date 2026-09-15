@@ -78,10 +78,26 @@ export interface OrderCompletedEvent extends BaseEvent {
   grantedRewardId?: string | null;
 }
 
+/**
+ * 「把这张券标掉」。
+ *
+ * 为什么要一个**专门**的事件，而不是复用 ORDER_PAID：
+ * 挂账 / 平台单建单即 PAID，从不走 updatePaymentStatus，所以 ORDER_PAID
+ * 这类单压根不发。而补发一个 ORDER_PAID 会顺带唤醒打印、配送、finance
+ * 那一串 handler —— 那些在建单流程里已经各自做过了，再跑一遍是重复。
+ *
+ * 拆成独立事件，投递范围就正好是「核销这一件事」。
+ */
+export interface CouponUseRequestedEvent extends BaseEvent {
+  type: 'COUPON_USE_REQUESTED';
+  grantedRewardId: string;
+}
+
 // 事件联合类型
 export type OrderEvent =
   | OrderCreatedEvent
   | OrderCreatedFromSnapshotEvent
   | TemporaryOrderCreatedEvent
   | OrderPaidEvent
-  | OrderCompletedEvent;
+  | OrderCompletedEvent
+  | CouponUseRequestedEvent;

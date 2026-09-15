@@ -12,7 +12,7 @@ import logger from '../utils/logger';
 import { assertCreditAvailable } from './credit.service';
 import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
 import { eventBus } from '../events';
-import { getMemberIdByConsumerId, validateGrantedRewardForMember, useGrantedReward, parseGrantedRewardId, restoreGrantedReward } from '../utils/member-client';
+import { getMemberIdByConsumerId, validateGrantedRewardForMember, parseGrantedRewardId, restoreGrantedReward } from '../utils/member-client';
 import { broadcastOrderStatusChanged } from '../websocket/print-task-dispatcher';
 import organizationService from './organization.service';
 import { getRefundsByOrderId } from './refund.service';
@@ -987,6 +987,38 @@ class OrderService {
             },
           });
 
+          /*
+            ★ 会员券核销，走**发件箱**。
+
+            挂账 / 平台单建单即 PAID（见 isAccountPayment 那段），从不走
+            updatePaymentStatus —— ORDER_PAID 对这类单从来不发，
+            member.handler 里那两支核销都轮不到它们。
+
+            为什么不在事务外直接 fetch：那是 fire-and-forget，
+            member-service 那一刻不可达就永久丢了，而券漏核销意味着
+            同一张券能被反复使用，每次都真金白银少收一笔。
+            写进发件箱就和订单同生共死，投递失败由 relay 退避重试。
+
+            为什么不补发一个 ORDER_PAID：那会顺带唤醒打印、配送、finance
+            一串 handler，它们在建单流程里已经各自做过了。
+
+            只对**建单即已付**的单发。UNPAID 的单等收款时走 ORDER_PAID 那支。
+          */
+          if (paymentStatus === 'PAID' && created.memberId) {
+            const _useGrId = parseGrantedRewardId(data.discountReason);
+            if (_useGrId) {
+              await enqueueEvent(tx, {
+                type: 'COUPON_USE_REQUESTED',
+                eventId: uuidv4(),
+                timestamp: new Date(),
+                tenantId,
+                orderId: created.id,
+                orderNumber: created.orderNumber,
+                grantedRewardId: _useGrId,
+              });
+            }
+          }
+
           // 和上面的 create 同一个事务：要么订单和通知都在，要么都不在
           await enqueueEvent(tx, {
             type: 'ORDER_CREATED',
@@ -1085,33 +1117,6 @@ class OrderService {
         （enqueueEvent），由 relay 负责投递 —— 见 outbox.service。
         **别在这里补一次 emit**：那样每个 handler 会跑两遍。
       */
-
-      /*
-        ★ 会员券核销。**这类单必须在这里做**，事件链救不了它们。
-
-        挂账 / 平台单建单即 PAID（见上面 isAccountPayment 那段），压根不走
-        updatePaymentStatus —— 而 ORDER_PAID 事件是在那里发的，于是
-        member.handler 里的 callUseGrantedReward 从来轮不到。
-        另一条 ORDER_COMPLETED 要等订单被标完成，可能是几小时后，也可能永远不会。
-
-        实测：同一张 10% 券在 260914-P02-1WLQ 和 260915-P02-00DG 两单都用了，
-        事后查 member 库仍是 status=ACTIVE、usedAt=null —— 能无限重复用。
-
-        建单前的 validateGrantedRewardForMember 只是"防双花关卡"，
-        它的注释假设 [validate→/use] 是个小窗；对这类单那个窗其实是无限大。
-        放在这里，窗口收敛到建单事务刚提交的这一瞬。
-
-        失败不影响下单（钱和订单都已经落定），只记日志。
-      */
-      if (paymentStatus === 'PAID' && order.memberId) {
-        const _useGrId = parseGrantedRewardId(data.discountReason);
-        if (_useGrId) {
-          useGrantedReward({ grantedRewardId: _useGrId, orderId: order.id })
-            .catch((err) => logger.warn('[OrderService] 会员券核销失败（非致命）', {
-              orderId: order.id, grantedRewardId: _useGrId, err,
-            }));
-        }
-      }
 
       // PLATFORM / ACCOUNT 订单：通知 finance-service 写财务分录（非阻塞）
       if (isAccountPayment || isPlatformCollect) {
