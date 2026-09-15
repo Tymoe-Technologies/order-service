@@ -966,13 +966,26 @@ router.get('/top-items', internalAuth, async (req: Request, res: Response) => {
     const { periodStart: start } = dayBoundaries(startDate, tz);
     const { periodEnd: end } = dayBoundaries(endDate, tz);
 
+    /*
+      ★ 按 item_id 分组，**不是 item_name**。
+
+      item_name 是下单那刻的快照，而它取自 POS 当时的界面语言 ——
+      店员切一次语言，同一个商品就多出一个「新商品」。
+      实测库里：经典奶茶 34 件 + Black Milk Tea 15 件，
+      本该是一个商品 49 件，榜上却是两行、件数各自腰斩。
+
+      显示名取**最近一单**用的那个：同一商品多个译名时总得挑一个，
+      挑最新的至少和店里当前的语言设置一致。
+      （根治要让快照存英文原名 —— item-service 的 name 主字段就是英文，
+       是 localizeEntity 把它就地覆盖掉了。那是另一处改动。）
+    */
     const rows = await prisma.$queryRaw<Array<{
       item_name: string;
       total_qty: bigint;
       total_revenue: bigint;
     }>>`
       SELECT
-        oi.item_name,
+        (array_agg(oi.item_name ORDER BY o.created_at DESC))[1] AS item_name,
         SUM(oi.quantity)    AS total_qty,
         SUM(oi.total_price) AS total_revenue
       FROM order_items oi
@@ -994,7 +1007,7 @@ router.get('/top-items', internalAuth, async (req: Request, res: Response) => {
         AND o.cancelled_at IS NULL
         AND o.created_at >= ${start}
         AND o.created_at <= ${end}
-      GROUP BY oi.item_name
+      GROUP BY oi.item_id
       ORDER BY total_qty DESC
       LIMIT ${Number(limit)}
     `;
