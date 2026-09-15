@@ -192,3 +192,36 @@ export async function restoreGrantedReward(params: {
     grantedRewardId: params.grantedRewardId, orderId: params.orderId,
   });
 }
+
+/**
+ * 冲正一笔订单的积分（整单取消 / 全额退款时调）。
+ *
+ * member-service 那边是定点作废该订单的 EARN 批次中**未消费**的部分，
+ * 已经花掉的不追（见那边 reversePointsForOrder 的说明）。
+ *
+ * 端点对「找不到批次 / 已冲正过 / 没有可冲的」都返回 200 —— 都是业务终态。
+ * 所以这里抛出的只会是真故障（并发冲突、服务不可达），交给 outbox 重试。
+ */
+export async function reverseOrderPoints(params: {
+  organizationId: string;
+  orderId: string;
+}): Promise<void> {
+  if (!INTERNAL_SERVICE_KEY) {
+    logger.warn('[MemberClient] INTERNAL_SERVICE_KEY 未配置，跳过积分冲正');
+    return;
+  }
+
+  const res = await fetch(`${MEMBER_SERVICE_URL}/internal/points/reverse`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-service-api-key': INTERNAL_SERVICE_KEY },
+    body: JSON.stringify(params),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(
+      `reverseOrderPoints failed: ${res.status} ${JSON.stringify(body)} (orderId=${params.orderId})`,
+    );
+  }
+  logger.info('[MemberClient] 订单积分已冲正', { orderId: params.orderId });
+}

@@ -6,11 +6,11 @@
  */
 
 import type { IEventBus } from '../event-bus';
-import type { OrderCompletedEvent, OrderPaidEvent, CouponUseRequestedEvent, CouponRestoreRequestedEvent } from '../types';
+import type { OrderCompletedEvent, OrderPaidEvent, CouponUseRequestedEvent, CouponRestoreRequestedEvent, PointsReverseRequestedEvent } from '../types';
 import logger from '../../utils/logger';
 import organizationService from '../../services/organization.service';
 // 和 order.service 的建单流程共用同一份 —— 两条路都要核销券，别各写一份
-import { useGrantedReward, restoreGrantedReward } from '../../utils/member-client';
+import { useGrantedReward, restoreGrantedReward, reverseOrderPoints } from '../../utils/member-client';
 
 const MEMBER_SERVICE_URL = process.env.MEMBER_SERVICE_URL || 'http://localhost:7006';
 const INTERNAL_SERVICE_KEY = process.env.INTERNAL_SERVICE_KEY || '';
@@ -185,6 +185,22 @@ export function registerMemberHandler(bus: IEventBus): void {
     const e = event as CouponRestoreRequestedEvent;
     if (!e.grantedRewardId) return;
     await restoreGrantedReward({ grantedRewardId: e.grantedRewardId, orderId: e.orderId });
+  });
+
+  /*
+    积分冲正。整单取消 / 全额退款时发，和券退回走同一套发件箱。
+
+    只有真给了钱才该有积分 —— 钱退了分不收回就能反复刷。
+    member-service 那边定点作废该订单的 EARN 批次，已消费的部分不追。
+
+    不 catch：失败要让 outbox 重试。端点对「找不到批次 / 已冲正 /
+    没有可冲的」都返回 200，重试不会死循环。
+  */
+  bus.on('POINTS_REVERSE_REQUESTED', async function member_POINTS_REVERSE_REQUESTED(event) {
+    const e = event as PointsReverseRequestedEvent;
+    if (!e.memberId) return;
+    const memberOrgId = await organizationService.resolveMemberOrgId(e.tenantId);
+    await reverseOrderPoints({ organizationId: memberOrgId, orderId: e.orderId });
   });
 
   /*

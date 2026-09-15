@@ -1724,6 +1724,24 @@ class OrderService {
           grantedRewardId: grId,
         });
       }
+
+      /*
+        积分冲正。只有真给了钱才该有积分 —— 钱退了分不收回就能反复刷。
+
+        条件是**曾经付过款**：UNPAID 的单本来就没加过分，发了也是空跑
+        （member-service 会返回 lot_not_found）。挂账单同理，它压根不计积分。
+      */
+      if (order.memberId && order.paymentStatus === 'PAID' && order.paymentMethod !== 'ACCOUNT') {
+        await enqueueEvent(tx, {
+          type: 'POINTS_REVERSE_REQUESTED',
+          eventId: uuidv4(),
+          timestamp: new Date(),
+          tenantId,
+          orderId,
+          orderNumber: order.orderNumber,
+          memberId: order.memberId,
+        });
+      }
     });
 
     logger.info(`Order cancelled: ${orderId}`, { cancellationReason, grantedRewardId: grId });

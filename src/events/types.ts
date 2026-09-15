@@ -106,6 +106,18 @@ export interface CouponRestoreRequestedEvent extends BaseEvent {
   grantedRewardId: string;
 }
 
+/**
+ * 「把这单的积分冲掉」。整单取消 / 全额退款时发。
+ *
+ * 和券退回同一个道理：只有真给了钱才该有积分，钱退了分就不该留着，
+ * 否则能反复刷。member-service 那边是**定点作废那个批次**
+ * （见 reversePointsForOrder），所以这里不用带金额。
+ */
+export interface PointsReverseRequestedEvent extends BaseEvent {
+  type: 'POINTS_REVERSE_REQUESTED';
+  memberId: string;
+}
+
 // 事件联合类型
 export type OrderEvent =
   | OrderCreatedEvent
@@ -114,4 +126,5 @@ export type OrderEvent =
   | OrderPaidEvent
   | OrderCompletedEvent
   | CouponUseRequestedEvent
-  | CouponRestoreRequestedEvent;
+  | CouponRestoreRequestedEvent
+  | PointsReverseRequestedEvent;
