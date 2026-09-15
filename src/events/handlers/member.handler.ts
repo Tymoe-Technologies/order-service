@@ -139,8 +139,14 @@ export function registerMemberHandler(bus: IEventBus): void {
     // 会员体系归属主店：分店下单时用 parentOrgId 调 member-service
     const memberOrgId = await organizationService.resolveMemberOrgId(e.tenantId);
 
-    // 按实付金额累积积分：税前小计 - 普通折扣 - 渠道折扣
-    const earnBase = Math.max(0, e.subtotal - (e.discountAmount ?? 0) - (e.channelDiscountAmount ?? 0));
+    /*
+      按实付金额累积积分：税前小计 − 耗材 − 普通折扣 − 渠道折扣。
+
+      减耗材的理由和折扣那边一样：餐具/购物袋/打包费是按份收的成本转嫁，
+      不是拿来做促销、也不该攒分的商品。买个打包袋攒分说不通。
+    */
+    const earnBase = Math.max(0,
+      e.subtotal - (e.supplySubtotal ?? 0) - (e.discountAmount ?? 0) - (e.channelDiscountAmount ?? 0));
     await callEarnPoints({
       memberId: e.memberId,
       organizationId: memberOrgId,
@@ -235,8 +241,9 @@ export function registerMemberHandler(bus: IEventBus): void {
     // 会员体系归属主店：分店下单时用 parentOrgId 调 member-service
     const memberOrgId = await organizationService.resolveMemberOrgId(e.tenantId);
 
-    // 按实付金额累积积分：税前小计 - 普通折扣 - 渠道折扣
-    const earnBase = Math.max(0, e.subtotal - (e.discountAmount ?? 0) - (e.channelDiscountAmount ?? 0));
+    // 口径同 ORDER_PAID 那支：税前小计 − 耗材 − 普通折扣 − 渠道折扣
+    const earnBase = Math.max(0,
+      e.subtotal - (e.supplySubtotal ?? 0) - (e.discountAmount ?? 0) - (e.channelDiscountAmount ?? 0));
     await callEarnPoints({
       memberId: e.memberId,
       organizationId: memberOrgId,

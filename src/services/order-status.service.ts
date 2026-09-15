@@ -5,6 +5,7 @@ import { OrderStatus, OrderSource } from '@prisma/client/client-order';
 import { eventBus } from '../events';
 import { v4 as uuidv4 } from 'uuid';
 import { broadcastOrderUpdate } from '../websocket/queue-display-server';
+import { sumSupplySubtotal } from './supply-line';
 
 /**
  * 订单状态管理服务
@@ -372,6 +373,9 @@ export class OrderStatusService {
     const _dr: string | null = order.discountReason ?? null;
     const _grId = _dr && _dr.startsWith('GrantedReward:') ? _dr.slice('GrantedReward:'.length) : null;
 
+    // 耗材不计积分（也不参与折扣），handler 要从 subtotal 里减掉它
+    const supplySubtotal = await sumSupplySubtotal(prisma, order.id);
+
     // 发布完成事件 → 触发积分累积等副作用
     eventBus.emit({
       eventId: uuidv4(),
@@ -382,6 +386,7 @@ export class OrderStatusService {
       orderNumber: order.orderNumber,
       memberId: order.memberId ?? null,
       subtotal: order.subtotal,
+      supplySubtotal,
       discountAmount: order.discountAmount ?? 0,
       totalAmount: order.totalAmount,
       orderSource: order.orderSource,

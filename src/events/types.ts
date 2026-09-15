@@ -43,6 +43,12 @@ export interface TemporaryOrderCreatedEvent extends BaseEvent {
 // 订单支付成功
 export interface OrderPaidEvent extends BaseEvent {
   type: 'ORDER_PAID';
+  /**
+   * 耗材小计（分）。subtotal 里含着它，算积分时要减掉 ——
+   * 餐具/购物袋是按份收的成本转嫁，不是拿来做促销也不该攒分的商品。
+   * 和折扣口径一致（见 POS 的 calculateOrderTax：耗材行折扣比例恒为 1）。
+   */
+  supplySubtotal?: number;
   clientOrigin: string;
   orderType: string;
   /**
@@ -67,6 +73,8 @@ export interface OrderPaidEvent extends BaseEvent {
 // 订单已完成（触发积分累积等副作用）
 export interface OrderCompletedEvent extends BaseEvent {
   type: 'ORDER_COMPLETED';
+  /** 耗材小计（分）。算积分时要从 subtotal 里减掉，理由见 OrderPaidEvent */
+  supplySubtotal?: number;
   memberId: string | null;
   subtotal: number;
   discountAmount?: number;

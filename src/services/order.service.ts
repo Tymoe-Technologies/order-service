@@ -6,6 +6,7 @@ import { runWithIdempotency, fingerprintOf } from './idempotency.service';
 import { toE164 } from '../utils/phone';
 import { sanitizeTaxLines, sanitizeItemTaxLines } from './tax-lines';
 import { calcChannelDiscount } from './channel-discount';
+import { sumSupplySubtotal } from './supply-line';
 import { getConsumerIdByMemberId } from '../utils/member-client';
 import { enqueueEvent } from './outbox.service';
 import logger from '../utils/logger';
@@ -1057,6 +1058,8 @@ class OrderService {
               orderNumber: created.orderNumber,
               memberId: created.memberId,
               subtotal: created.subtotal,
+              // 耗材不计积分，用建单时已经算好的那份，不用再查一次
+              supplySubtotal,
               discountAmount: created.discountAmount,
               channelDiscountAmount: created.channelDiscountAmount,
               totalAmount: created.totalAmount,
@@ -2542,6 +2545,8 @@ class OrderService {
           discountAmount: updatedOrder.discountAmount ?? 0,
           channelDiscountAmount: updatedOrder.channelDiscountAmount ?? 0,
           paymentMethod: updatedOrder.paymentMethod ?? null,
+          // 耗材不计积分（也不参与折扣）。事务内查一次，给下面两个事件共用
+          supplySubtotal: await sumSupplySubtotal(tx, data.orderId),
         },
       };
     });
@@ -2585,6 +2590,7 @@ class OrderService {
         memberId: (result as any)._meta.memberId,
         subtotal: (result as any)._meta.subtotal,
         discountAmount: (result as any)._meta.discountAmount,
+        supplySubtotal: (result as any)._meta.supplySubtotal ?? 0,
         channelDiscountAmount: (result as any)._meta.channelDiscountAmount,
         totalAmount: (result as any)._meta.totalAmount,
         paymentMethod: (result as any)._meta.paymentMethod,
@@ -2609,6 +2615,7 @@ class OrderService {
           memberId: (result as any)._meta.memberId,
           subtotal: (result as any)._meta.subtotal,
           discountAmount: (result as any)._meta.discountAmount,
+          supplySubtotal: (result as any)._meta.supplySubtotal ?? 0,
           channelDiscountAmount: (result as any)._meta.channelDiscountAmount,
           totalAmount: (result as any)._meta.totalAmount,
           clientOrigin: (result as any)._meta.orderSource,
