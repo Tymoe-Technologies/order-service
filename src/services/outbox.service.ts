@@ -175,3 +175,63 @@ export function startOutboxRelay(intervalMs = 500): void {
 export function stopOutboxRelay(): void {
   if (timer) { clearInterval(timer); timer = null; }
 }
+
+/** 已投递记录保留多久。够排查「这条事件到底投没投」就行，再久就是白占地方 */
+const RETENTION_DAYS = 7;
+/** 一次最多删多少行。分批是为了不开长事务 —— 这张表 relay 每 500ms 就要读一次 */
+const PURGE_BATCH = 2000;
+
+/**
+ * 清掉过期的**已投递**记录。
+ *
+ * 这张表是只进不出的：每单产生若干事件，每个事件还要按 handler 数拆成多行
+ * （见 enqueueEvent）。按一天 500 单、一单 10 行算，一年 180 万行，
+ * payload 又是完整的事件 JSON —— 不清理迟早变成备份和 VACUUM 的负担。
+ *
+ * **只删 publishedAt 不为空的**。待投递的一行都不碰：那是还没做完的活，
+ * 哪怕它已经失败了几百次，删掉等于悄悄丢掉一件该做的事。
+ * （代价是永久失败的事件会一直躺在板上重试 —— 那是死信处理的范畴，
+ *  得靠 attempts 阈值 + 告警来收口，这里不越界。）
+ *
+ * 分批 + DELETE ... IN (SELECT ... LIMIT)：一次性删几十万行会把表锁住，
+ * 而 relay 每 500ms 就要读它。
+ */
+export async function purgePublishedEvents(
+  retentionDays = RETENTION_DAYS,
+  batch = PURGE_BATCH,
+): Promise<number> {
+  const before = new Date(Date.now() - retentionDays * 86400_000);
+  const deleted = await prisma.$executeRaw`
+    DELETE FROM outbox_events
+     WHERE id IN (
+       SELECT id FROM outbox_events
+        WHERE published_at IS NOT NULL
+          AND published_at < ${before}
+        LIMIT ${batch}
+     )
+  `;
+  if (deleted > 0) logger.info('[Outbox] 已清理投递完成的记录', { deleted, retentionDays });
+  return deleted;
+}
+
+let purgeTimer: NodeJS.Timeout | null = null;
+
+/**
+ * 定时清理。一小时一次足够 —— 每次最多删 PURGE_BATCH 行，
+ * 按默认值一天能清 4.8 万行，远超正常产出速度。
+ * 积压特别多时（比如第一次启用）会分几天慢慢清完，这是有意的：
+ * 宁可清得慢，也不要一次锁表影响出单。
+ */
+export function startOutboxPurge(intervalMs = 3600_000): void {
+  if (purgeTimer) return;
+  const tick = () => {
+    purgePublishedEvents().catch((e) => logger.error('[Outbox] 清理本轮异常', { e }));
+  };
+  tick();
+  purgeTimer = setInterval(tick, intervalMs);
+  logger.info('[Outbox] 清理任务已启动', { intervalMs, retentionDays: RETENTION_DAYS });
+}
+
+export function stopOutboxPurge(): void {
+  if (purgeTimer) { clearInterval(purgeTimer); purgeTimer = null; }
+}

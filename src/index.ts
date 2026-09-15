@@ -21,7 +21,7 @@ import { startDeliveryConfirmationWatchdog, stopDeliveryConfirmationWatchdog } f
 import { startAutoDeliveryConfirmation, stopAutoDeliveryConfirmation } from './jobs/auto-delivery-confirmation';
 import { purgeExpiredIdempotencyKeys } from './services/idempotency.service';
 import { purgeOldPrintTasks } from './services/print-task-retention';
-import { startOutboxRelay } from './services/outbox.service';
+import { startOutboxRelay, startOutboxPurge } from './services/outbox.service';
 
 const PORT = process.env.PORT || 3002;
 
@@ -140,6 +140,12 @@ const startServer = async () => {
       500ms 空转的成本是一条走索引的查询，可以忽略。
     */
     startOutboxRelay(500);
+
+    /*
+      发件箱是只进不出的：每单若干事件、每个事件再按 handler 数拆行。
+      不清理迟早变成备份和 VACUUM 的负担。只删已投递的，待投递的一行不碰。
+    */
+    startOutboxPurge();
 
     // ========== 幂等键过期清理 ==========
     /*
