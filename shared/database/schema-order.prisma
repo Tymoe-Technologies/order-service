@@ -8,6 +8,46 @@ datasource db {
   url      = env("ORDER_DATABASE_URL")
 }
 
+/// # orders 有 78 列，先看这张地图
+///
+/// 列多不是堆出来的技术债 —— 订单本来就是个宽实体，而且绝大多数字段是
+/// **快照**（下单那一刻冻结，不能关联外部表重算：商品会改名、税率会调档、
+/// 渠道会停用，历史单必须保持开票当时的样子）。
+///
+/// 真正的成本不在列数，在于**哪些列在什么情况下才有值**是隐式的。
+/// 按这个分组读，78 列里通常只有 20 个左右和你在看的场景相关：
+///
+/// | 分组 | 什么时候有值 | 代表列 |
+/// |---|---|---|
+/// | 身份 / 归属 | 一直 | tenantId、orderNumber、pickupNumber、deviceId、cashierId |
+/// | 顾客 | 填了才有 | customerName/Phone/Email、tableNumber、memberId、consumerId |
+/// | 金额 | 一直（单位**分**） | subtotal、taxAmount、taxLines、discountAmount、tipAmount、totalAmount |
+/// | 支付 | 收款后 | paymentStatus、paymentMethod、paidAt、transactionId、paymentIntentId |
+/// | 结算 | **状态机尚未实现**，全是 PENDING/null | settlementStatus、settledAt、settlementBatch |
+/// | 配送 | 仅 orderType=DELIVERY | delivery*（8）、uber*（3）、deliveryProvider |
+/// | 路边取餐 | 仅 CURBSIDE | vehicleInfo、arrivedAt |
+/// | 第三方平台 | 仅平台单 | external*（3） |
+/// | 渠道 | 仅走销售渠道的单 | channelConfigId、channelName、channelDiscountAmount、creditSettledAt |
+/// | 预约 | 仅 isScheduled | scheduledAt、releasedAt、scheduledConfirmedAt |
+/// | 离线补录 | 仅 POS 断网期间的单 | claimedCreatedAt、claimedOrderNumber |
+/// | 状态时间线 | 走到那一步才写 | confirmedAt / preparingAt / readyAt / pickedUpAt / deliveredAt / completedAt / cancelledAt |
+///
+/// ## 两组容易看混的钱
+///   deliveryFee / deliveryFeeTax        向顾客**收**的（销项税，要申报上缴）
+///   uberDeliveryFee / uberDeliveryFeeTax 付给 Uber 的**成本**（进项税，可做 ITC 抵扣）
+/// 加错方向就是把成本当收入。
+///
+/// ## 为什么不拆表
+/// 配送那 11 列（delivery* + uber*）边界最清晰，看着最该拆去一对一的子表。
+/// 评估过两次都没做：拆完总列数不变、要改一片查询和 include，
+/// 而收益只是「看着清爽」—— 它没有解决过任何一次线上故障。
+/// 真要拆，第一刀切这 11 列，别顺手拆别的。
+///
+/// ## 没有死列
+/// 逐列查过全平台引用（含 POS / portal / admin / consumer 四端）：
+/// 零引用的只有 uberDeliveryFeeTax（等 Uber 月度发票回填，见那一行的说明）
+/// 和结算那两列（状态机没实现，但 settlementStatus 已经在 portal 报表里露出）。
+/// 想删列之前先重跑这个检查，别照着「反正没人用」就动手。
 model Order {
   id             String        @id @default(uuid()) @db.Uuid
   tenantId       String        @map("tenant_id") @db.Uuid
