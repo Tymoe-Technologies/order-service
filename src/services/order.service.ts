@@ -5,6 +5,7 @@ import { AppError } from '../middleware/errorHandler';
 import { runWithIdempotency, fingerprintOf } from './idempotency.service';
 import { toE164 } from '../utils/phone';
 import { sanitizeTaxLines, sanitizeItemTaxLines } from './tax-lines';
+import { calcChannelDiscount } from './channel-discount';
 import { getConsumerIdByMemberId } from '../utils/member-client';
 import { enqueueEvent } from './outbox.service';
 import logger from '../utils/logger';
@@ -719,16 +720,8 @@ class OrderService {
         }
 
         const rules = channelConfig.checkoutRules as any;
-        const discount = rules?.orderDiscount;
-        if (discount?.enabled) {
-          if (discount.type === 'PERCENTAGE') {
-            // value 为 0-100 的百分比
-            channelDiscountAmount = Math.round(subtotal * (discount.value / 100));
-          } else if (discount.type === 'FIXED') {
-            // value 单位为分
-            channelDiscountAmount = Math.min(discount.value, subtotal);
-          }
-        }
+        // 基数是整单折扣之后的小计，且必须和 POS 算出同一个数 —— 见 calcChannelDiscount
+        channelDiscountAmount = calcChannelDiscount(rules?.orderDiscount, subtotal, orderLevelDiscount);
 
         // 记账模式：支付方式强制覆盖为 ACCOUNT
         if (channelConfig.checkoutMode === 'CREDIT_ACCOUNT') {
