@@ -190,7 +190,7 @@ POST /orders
   "success": true,
   "data": {
     "id": "uuid",
-    "orderNumber": "A6AEE8-POS-20241106-0001",
+    "orderNumber": "260817-P01-2F7Q",
     "orderType": "DINE_IN",
     "orderSource": "POS",
     "status": "PENDING",
@@ -267,12 +267,22 @@ POST /orders
 ```
 
 **订单号格式说明**:
-- 格式: `{门店代码}-{订单来源}-{日期}-{序号}`
-- 示例: `A6AEE8-POS-20241106-0001`
-  - `A6AEE8`: 门店代码 (从租户ID提取前6位)
-  - `POS`: 订单来源
-  - `20241106`: 日期
-  - `0001`: 当天序号 (按门店+来源每天重置)
+- 格式: `{营业日}-{渠道码}{设备码}-{当日秒数}`，共 15 位
+- 示例: `260817-P01-2F7Q`
+  - `260817`: 营业日 `YYMMDD`，用**门店本地时间**（按 UTC 算的话晚市的单会记到第二天，和 Z 报表对不上）
+  - `P`: 渠道码，1 位 —— `P`=POS / `W`=WEB / `K`=KIOSK / `U`=UBER_EATS，未知渠道为 `X`。只给人扫一眼看出单从哪来，不参与唯一性
+  - `01`: 设备码，2 位 base34，由 auth-service 激活设备时分配、门店内唯一。`00` 保留给服务端自己建的单（Web 预约、外卖平台）
+  - `2F7Q`: 当日秒数的 4 位 base34 编码；同一秒开第二单则借下一秒
+- 字符集为 base34（`0-9A-Z` 去掉 `I`/`O`，避免与 `1`/`0` 混淆）
+- **唯一性范围是门店内，不是全平台**：`@@unique([tenantId, orderNumber])`。两个组织同一秒、
+  同一设备码各开一单会拿到完全相同的订单号，这是设计。全平台唯一由 `orders.id`（UUIDv7 主键）承担。
+  因此任何按订单号查询都必须带 `tenantId`；跨租户查询见下方「平台内部按订单号查单」。
+- POS 可在离线时本地发号（唯一性靠设备码做号段隔离，不靠随机）。客户端发的号若与库里冲突，
+  服务端改用自己发的号，并把客户端那个留进 `claimed_order_number`，不拒绝请求。
+
+> 旧格式 `A6AEE8-POS-20241106-0001`（门店码+来源+日期+当日序号）已停用：
+> 当日序号必须跨越一整天、得落盘，落盘会丢，丢了必然重号。现格式把序号挂在时间刻度下，
+> 每秒重置，纯内存即可。文档中其余示例若仍为旧格式，以本节为准。
 
 **总金额计算公式**:
 ```
@@ -309,7 +319,7 @@ GET /orders?page=1&limit=20
     "orders": [
       {
         "id": "uuid",
-        "orderNumber": "A6AEE8-POS-20241106-0001",
+        "orderNumber": "260817-P01-2F7Q",
         "orderType": "DINE_IN",
         "orderSource": "POS",
         "status": "PENDING",
@@ -344,7 +354,7 @@ GET /orders/:orderId
   "success": true,
   "data": {
     "id": "uuid",
-    "orderNumber": "A6AEE8-POS-20241106-0001",
+    "orderNumber": "260817-P01-2F7Q",
     "orderType": "DINE_IN",
     "orderSource": "POS",
     "status": "PENDING",
@@ -2107,7 +2117,7 @@ CLOUDINARY_API_SECRET=your-api-secret
 {
   "success": true,
   "data": {
-    "orderNumber": "A6AEE8-POS-20241206-0001",
+    "orderNumber": "260817-P01-2F7Q",
     "paymentStatus": "PAID",
     "cashReceived": 50.00,
     "changeGiven": 8.96
@@ -2117,3 +2127,57 @@ CLOUDINARY_API_SECRET=your-api-secret
 
 **详细文档**: 查看 [CASH-PAYMENT.md](./CASH-PAYMENT.md)
 
+
+---
+
+# 平台内部接口（Internal）
+
+**认证**: `x-service-api-key`（服务间调用，不对外暴露，不走用户 Bearer Token）
+
+## 平台内部按订单号查单
+
+```http
+GET /internal/orders/:orderId?tenantId={orgId}
+```
+
+供 admin-bff「业务视图」下钻用，**跨租户**：平台方可查任意商户的订单。
+`:orderId` 既接受订单 id（UUID），也接受人类可读的订单号。
+
+**参数**:
+- `:orderId` (必填): 订单 id（UUID，全平台唯一）或订单号（仅门店内唯一）
+- `tenantId` (可选): 组织 ID。按订单号查且该号跨组织重号时用它消歧
+
+**订单号重号时返回 409**:
+
+订单号只在门店内唯一（见上方「订单号格式说明」）。两个组织同一秒、同一设备码
+各开一单会拿到相同的号，此时**不会**任选一条返回，而是要求调用方消歧：
+
+```json
+{
+  "success": false,
+  "code": "ORDER_NUMBER_AMBIGUOUS",
+  "error": "订单号 260817-P01-2F7Q 在多个组织下都存在，请指定 tenantId，或改用候选中的订单 id 查询",
+  "details": {
+    "candidates": [
+      {
+        "orderId": "0192f3a1-...-...",
+        "tenantId": "a6aee8...",
+        "orgName": "多伦多店",
+        "orderNumber": "260817-P01-2F7Q",
+        "createdAt": "2026-08-17T16:00:00.000Z",
+        "totalAmount": 1999
+      }
+    ]
+  }
+}
+```
+
+调用方二选一：带 `?tenantId=` 重查，或直接用候选里的 `orderId`（UUID，无歧义）重查。
+
+> **为什么不任选一条**：返回的那单金额、商品、状态全都自洽，只是可能属于另一家店，
+> 看的人分辨不出来。而 admin-bff 会拿这一条的 id 当 `resolvedOrderId` 继续查
+> finance / member / Loki —— 整条链路视图会**一致地**指向错的组织，
+> 排查的人拿着 B 店的数据解释 A 店的问题。
+
+**其他错误码**:
+- `404 ORDER_NOT_FOUND`: 订单不存在
