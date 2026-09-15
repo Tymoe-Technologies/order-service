@@ -157,3 +157,38 @@ export function parseGrantedRewardId(discountReason?: string | null): string | n
     ? discountReason.slice('GrantedReward:'.length)
     : null;
 }
+
+/**
+ * 退回一张已核销的券（订单整单取消 / 全额退款时调）。
+ *
+ * 有效期由 member-service 补偿「被占用的时长」—— 券锁在订单上的这段时间
+ * 顾客没法用，原样加回到期时间。永久券不动。
+ *
+ * 端点永远返回 200（券不存在、已 ACTIVE、已被商家作废都是业务终态），
+ * 所以这里抛出的只会是真故障 —— 调用方可以放心让它触发重试。
+ */
+export async function restoreGrantedReward(params: {
+  grantedRewardId: string;
+  orderId?: string;
+}): Promise<void> {
+  if (!INTERNAL_SERVICE_KEY) {
+    logger.warn('[MemberClient] INTERNAL_SERVICE_KEY 未配置，跳过券退回');
+    return;
+  }
+
+  const res = await fetch(`${MEMBER_SERVICE_URL}/internal/rewards/restore`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-service-api-key': INTERNAL_SERVICE_KEY },
+    body: JSON.stringify({ grantedRewardId: params.grantedRewardId, orderId: params.orderId }),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(
+      `restoreGrantedReward failed: ${res.status} ${JSON.stringify(body)} (grantedRewardId=${params.grantedRewardId})`,
+    );
+  }
+  logger.info('[MemberClient] 券已退回', {
+    grantedRewardId: params.grantedRewardId, orderId: params.orderId,
+  });
+}

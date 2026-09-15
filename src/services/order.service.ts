@@ -12,7 +12,7 @@ import logger from '../utils/logger';
 import { assertCreditAvailable } from './credit.service';
 import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
 import { eventBus } from '../events';
-import { getMemberIdByConsumerId, validateGrantedRewardForMember, useGrantedReward, parseGrantedRewardId } from '../utils/member-client';
+import { getMemberIdByConsumerId, validateGrantedRewardForMember, useGrantedReward, parseGrantedRewardId, restoreGrantedReward } from '../utils/member-client';
 import { broadcastOrderStatusChanged } from '../websocket/print-task-dispatcher';
 import organizationService from './organization.service';
 import { getRefundsByOrderId } from './refund.service';
@@ -1691,6 +1691,31 @@ class OrderService {
         cancellationReason,
       },
     });
+
+    /*
+      ★ 把会员券退回去。
+
+      这单没做成，顾客不该白搭一张券 —— 尤其 POS 上的取消基本都是店家
+      发起的（缺货、做错了、点错了）。
+
+      有效期由 member-service 补偿「被占用的时长」：券锁在这张单上的
+      这段时间顾客没法用，原样加回到期时间。所以不需要为不同有效期的券
+      各定一个宽限期，也无法靠「下单占住券」续期（那段时间券本来就不可用）。
+
+      只在**整单取消**这条路上退。部分退款不退 —— 那笔交易还在，
+      折扣已经体现在里面了。
+
+      失败不阻塞取消（订单已经改完了），只记日志。member-service 的
+      /restore 对「券不存在 / 已 ACTIVE / 已被商家作废」都返回 200，
+      所以这里几乎只会在服务不可达时失败。
+    */
+    const grId = parseGrantedRewardId(order.discountReason);
+    if (grId) {
+      restoreGrantedReward({ grantedRewardId: grId, orderId })
+        .catch((err) => logger.warn('[OrderService] 券退回失败（非致命）', {
+          orderId, grantedRewardId: grId, err,
+        }));
+    }
 
     logger.info(`Order cancelled: ${orderId}`, { cancellationReason });
   }
