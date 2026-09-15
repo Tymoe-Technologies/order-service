@@ -100,3 +100,49 @@ export async function getConsumerIdByMemberId(memberId: string): Promise<string 
     return null;
   }
 }
+
+/**
+ * 标记 GrantedReward 为 USED。失败只记日志（非致命）。
+ *
+ * 两个调用方，别只改一处：
+ *   · member.handler 的 ORDER_PAID / ORDER_COMPLETED 事件链（现金、刷卡、Web 单）
+ *   · order.service 建单流程里的**挂账 / 平台单** —— 那类单建单即 PAID
+ *     （见 isAccountPayment 那段），压根不走 updatePaymentStatus，
+ *     ORDER_PAID 事件从来不发，事件链核销不到它们。
+ *
+ * member-service 的 /use 端点自身是幂等的（状态机只认 ACTIVE→USED），
+ * 所以两条路都调也不会出问题。
+ */
+export async function useGrantedReward(params: {
+  grantedRewardId: string;
+  orderId: string;
+}): Promise<void> {
+  if (!INTERNAL_SERVICE_KEY) {
+    logger.warn('[MemberClient] INTERNAL_SERVICE_KEY 未配置，跳过奖励标记');
+    return;
+  }
+
+  const res = await fetch(`${MEMBER_SERVICE_URL}/internal/rewards/use`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-service-api-key': INTERNAL_SERVICE_KEY },
+    body: JSON.stringify({ grantedRewardId: params.grantedRewardId, orderId: params.orderId }),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    logger.warn('[MemberClient] 奖励标记失败（非致命）', {
+      grantedRewardId: params.grantedRewardId, status: res.status, body,
+    });
+  } else {
+    logger.info('[MemberClient] 奖励已标记为 USED', {
+      grantedRewardId: params.grantedRewardId, orderId: params.orderId,
+    });
+  }
+}
+
+/** 从 `GrantedReward:<id>` 这种 discountReason 里抠出券 id。不是这个形状就返回 null */
+export function parseGrantedRewardId(discountReason?: string | null): string | null {
+  return discountReason?.startsWith('GrantedReward:')
+    ? discountReason.slice('GrantedReward:'.length)
+    : null;
+}

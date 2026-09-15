@@ -9,49 +9,12 @@ import type { IEventBus } from '../event-bus';
 import type { OrderCompletedEvent, OrderPaidEvent } from '../types';
 import logger from '../../utils/logger';
 import organizationService from '../../services/organization.service';
+// 和 order.service 的建单流程共用同一份 —— 两条路都要核销券，别各写一份
+import { useGrantedReward } from '../../utils/member-client';
 
 const MEMBER_SERVICE_URL = process.env.MEMBER_SERVICE_URL || 'http://localhost:7006';
 const INTERNAL_SERVICE_KEY = process.env.INTERNAL_SERVICE_KEY || '';
 
-/**
- * 调用 member-service 标记 GrantedReward 为 USED
- */
-async function callUseGrantedReward(params: {
-  grantedRewardId: string;
-  orderId: string;
-}): Promise<void> {
-  if (!INTERNAL_SERVICE_KEY) {
-    logger.warn('[MemberHandler] INTERNAL_SERVICE_KEY 未配置，跳过奖励标记');
-    return;
-  }
-
-  const url = `${MEMBER_SERVICE_URL}/internal/rewards/use`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-service-api-key': INTERNAL_SERVICE_KEY,
-    },
-    body: JSON.stringify({
-      grantedRewardId: params.grantedRewardId,
-      orderId: params.orderId,
-    }),
-  });
-
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    logger.warn('[MemberHandler] 奖励标记失败（非致命）', {
-      grantedRewardId: params.grantedRewardId,
-      status: res.status,
-      body,
-    });
-  } else {
-    logger.info('[MemberHandler] 奖励已标记为 USED', {
-      grantedRewardId: params.grantedRewardId,
-      orderId: params.orderId,
-    });
-  }
-}
 
 /**
  * 下单的是**哪家店**。
@@ -174,7 +137,7 @@ export function registerMemberHandler(bus: IEventBus): void {
 
     // 支付成功后标记 GrantedReward 为 USED（非致命，失败只记日志）
     if (e.grantedRewardId) {
-      await callUseGrantedReward({
+      await useGrantedReward({
         grantedRewardId: e.grantedRewardId,
         orderId: e.orderId,
       }).catch(err => {
@@ -228,7 +191,7 @@ export function registerMemberHandler(bus: IEventBus): void {
 
     // POS 同步流程使用了会员券 → 标记为 USED(非致命,失败仅记日志)
     if (e.grantedRewardId) {
-      await callUseGrantedReward({
+      await useGrantedReward({
         grantedRewardId: e.grantedRewardId,
         orderId: e.orderId,
       }).catch((err) => {
