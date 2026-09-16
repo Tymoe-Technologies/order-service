@@ -130,24 +130,19 @@ export async function listEnabledTypes(merchantId: string): Promise<FulfillmentT
   return all.filter(o => o.enabled).map(o => o.fulfillmentType);
 }
 
-/**
- * POS 下单默认用哪种履约方式。
- *
- * 背景：POS 结账页一直硬编码 DINE_IN，所以库里的 DINE_IN 不代表真堂食 ——
- * 快餐店卖出去的外带咖啡也记成了堂食，报表里的堂食/外带比例是假的。
- *
- * 本来想按「有没有桌号」推断，但 POS 结账页压根不收集桌号（tableNumber 只在
- * 订单管理页展示），判断依据不存在。所以改成让商家配：正餐店配 DINE_IN，
- * 快餐店配 TAKEOUT，收银员不用多点一下，数据也不再是假的。
- *
- * 没配过就返回 DINE_IN —— 维持 POS 的历史行为，升级不改变任何存量门店的数据口径。
- */
-export async function getPosDefaultType(merchantId: string): Promise<FulfillmentType> {
-  const all = await listOptions(merchantId);
-  const marked = all.find(o => o.enabled && (o.config as any)?.isPosDefault === true);
-  if (marked) return marked.fulfillmentType;
-  return OrderType.DINE_IN;
-}
+/*
+  这里原来有 getPosDefaultType()：读 config.isPosDefault，让商家配「POS 默认
+  下单方式」，没配就兜 DINE_IN。已删除（Portal 的配置入口也一起删了）。
+
+  原来的问题是真的 —— POS 一直硬编码 DINE_IN，快餐店卖出去的外带咖啡全记成
+  堂食，报表比例是假的。但解法换了：**履约方式由下单入口决定**，不由商家配。
+  顾客走到柜台点的就是自取，未来从 floor plan 开台的就是堂食
+  （见 POS 的 COUNTER_ORDER_TYPE）。入口本来就知道答案，再让商家配一遍只会
+  出现「配的和入口矛盾时听谁的」，而且那个兜底还有个 bug：兜的 DINE_IN
+  不检查 enabled，商家关了堂食又没配时会返回一个已停用的类型。
+
+  存量数据里的 config.isPosDefault 没人读了，留着是惰性 JSON。
+*/
 
 /**
  * 某个门店是否支持某种履约方式。下单时用它挡住「商家没开却硬提交」的请求。

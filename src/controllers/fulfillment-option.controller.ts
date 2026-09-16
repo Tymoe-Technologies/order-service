@@ -107,12 +107,17 @@ export async function listPublicOptions(req: Request, res: Response) {
   try {
     const { merchantId } = req.params;
     const all = await fulfillmentService.listOptions(merchantId);
-    // posDefault 一并给出：POS 拿它替掉硬编码的 DINE_IN，不用再单独发一次请求
-    const posDefault = await fulfillmentService.getPosDefaultType(merchantId);
+    /*
+      原来这里还给一个 posDefault（商家配的「POS 默认下单方式」）。已去掉：
+      POS 的履约方式由下单入口决定，不由商家配（见 fulfillment-option.service
+      里 getPosDefaultType 被删处的说明）。
+
+      去掉这个字段不破坏兼容：唯一解析过它的 consumer-app 写的是
+      `json?.posDefault ?? 'DINE_IN'`，而且拿到之后从没用过。
+    */
     return res.json({
       success: true,
       data: all.filter(o => o.enabled),
-      posDefault,
     });
   } catch (error: any) {
     logger.error('获取公开履约方式失败', { error: error.message });
