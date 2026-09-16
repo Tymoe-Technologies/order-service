@@ -288,7 +288,12 @@ async function getComboPrices(merchantId: string, comboIds: string[], channelCod
 /** item-management 报价出来的一条耗材行 */
 interface QuotedSupplyLine {
   supply_id: string
+  /** 按请求 locale 压平后的名字。**别用它落快照**，见 name_default */
   name: string
+  /** 英文基准名（catalog_supplies.name 的原值）。订单快照写这个 */
+  name_default?: string | null
+  /** 各语言译名。打印时各端按自己的票据语言重挑 */
+  name_i18n?: Record<string, string> | null
   quantity: number
   unit_price: number   // 分
   total_price: number  // 分
@@ -869,7 +874,17 @@ export async function createCheckoutSnapshot(
     // isSupply 标记让落库那步知道该写 lineKind=SUPPLY
     const supplySnapshotLines = supplyQuote.lines.map(line => ({
       itemId: line.supply_id,
-      itemName: line.name,
+      /*
+        ★ 落**英文基准名**，不是压平后的 name。
+
+        item_name 是快照，而压平后的名字取决于下单时顾客界面是什么语言 ——
+        同一个购物袋会按顾客语言存成几种名字：报表按名字分组会拆成几行，
+        票据也没法按自己配置的语言重挑（商品名踩过同一个坑，
+        实测「经典奶茶」和「Black Milk Tea」在热销榜上是两行）。
+
+        老版本 item-service 不返回 name_default 时退回 name，行为不变。
+      */
+      itemName: line.name_default || line.name,
       quantity: line.quantity,
       unitPrice: line.unit_price,
       isSupply: true,
