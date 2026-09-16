@@ -25,6 +25,9 @@ const requireEdit = requireModulePermission('printSettings', 'edit');
 
 // 打印机归属（放在根路由之前避免冲突）
 router.put('/assignments', requireEdit, printRoutingController.putAssignments);
+// 具体路径在 :scope 之前 —— 虽然 :scope 只匹配单段、吃不掉 device/xxx，
+// 但依赖这个细节不如把顺序写明确
+router.delete('/assignments/device/:deviceId', requireEdit, printRoutingController.releaseDeviceAssignments);
 router.delete('/assignments/:scope', requireEdit, printRoutingController.deleteAssignment);
 
 router.get('/', printRoutingController.getConfig);

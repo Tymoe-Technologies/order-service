@@ -190,11 +190,54 @@ export const assignmentScope = (
   target: { stationId?: string | null; ticketType: string },
 ): string => (target.stationId ? `station:${target.stationId}` : `ticket:${target.ticketType}`);
 
+/**
+ * 业务角色归属：**谁接网店 / 第三方订单**。
+ *
+ * 复用 printer_assignments 表而不是新建一张，是因为要的东西一模一样 ——
+ * 「全店恰好一台设备负责某件事」，而 `@@unique([tenantId, scope])` 已经
+ * 在数据库层保证了这一点。靠界面自觉保证唯一是做不到的：两台设备同时开，
+ * 谁也拦不住。
+ *
+ * 和 `ticket:` / `station:` 的区别：那两个回答「这张单打到哪」，
+ * 这个回答「这一类**订单**归谁处理」—— 包括需要人工接单/拒单的第三方来单，
+ * 不只是打印。
+ */
+export const ROLE_ONLINE_ORDER_RECEIVER = 'role:ONLINE_ORDER_RECEIVER';
+
+/**
+ * 任务 → 候选归属 scope，按优先级。分发器取**第一个查得到归属**的。
+ *
+ * **厨房单**按备餐站定向（`station:<id>`），这条不变。
+ *
+ * **收据和标签**交给接单设备。能走到分发器的收据/标签一定不是 POS 单的 ——
+ * `tasksForOtherDevices` 只放行 KITCHEN_TICKET，POS 单的收据标签一律本机打、
+ * 根本不进分发。剩下的就是 Web / 第三方 / Kiosk 来单，那些单
+ * 「顾客面前那台」不存在，本来就该去接单机。
+ *
+ * `ticket:<类型>` 作为第二候选留着，是为了**升级期间**：新版 POS 的设置界面
+ * 已经不再上报这类归属，但老版本还在报、库里也有存量记录。现在就砍掉它，
+ * 老版本 POS 的网店单会直接退回广播 = 重复打印。等全部升级完，
+ * 清理是一条 DELETE 的事。
+ */
+export const candidateScopes = (
+  task: { ticketType: string; stationId?: string | null },
+): string[] => (
+  task.ticketType === 'KITCHEN_TICKET'
+    ? [assignmentScope(task)]
+    : [ROLE_ONLINE_ORDER_RECEIVER, assignmentScope(task)]
+);
+
 /** 反解，供设置界面和校验用 */
 export const parseAssignmentScope = (
   scope: string,
-): { kind: 'station'; stationId: string } | { kind: 'ticket'; ticketType: string } | null => {
-  const m = /^(station|ticket):(.+)$/.exec(scope || '');
+):
+  | { kind: 'station'; stationId: string }
+  | { kind: 'ticket'; ticketType: string }
+  | { kind: 'role'; role: string }
+  | null => {
+  const m = /^(station|ticket|role):(.+)$/.exec(scope || '');
   if (!m) return null;
-  return m[1] === 'station' ? { kind: 'station', stationId: m[2] } : { kind: 'ticket', ticketType: m[2] };
+  if (m[1] === 'station') return { kind: 'station', stationId: m[2] };
+  if (m[1] === 'role') return { kind: 'role', role: m[2] };
+  return { kind: 'ticket', ticketType: m[2] };
 };

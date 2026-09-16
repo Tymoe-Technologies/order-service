@@ -85,7 +85,7 @@ export function registerDeliveryHandler(bus: IEventBus): void {
     }
 
     // 通过 WebSocket 推送给 POS，由员工选择备餐时间后创建 Uber 配送单
-    broadcastDeliveryOrder(e.tenantId, {
+    await broadcastDeliveryOrder(e.tenantId, {
       orderId: e.orderId,
       orderNumber: e.orderNumber,
       tenantId: e.tenantId,

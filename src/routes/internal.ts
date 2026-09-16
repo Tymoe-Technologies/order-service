@@ -226,7 +226,7 @@ router.post('/uber-eats-order', internalAuth, async (req: Request, res: Response
       commissionRate: uberChannel?.commissionRate?.toString() ?? null,
     }).catch(() => {});
 
-    broadcastThirdPartyOrder(tenantId, {
+    await broadcastThirdPartyOrder(tenantId, {
       orderId: order.id,
       orderNumber: order.orderNumber,
       externalOrderId,
@@ -359,7 +359,7 @@ router.post('/uber-eats-order-print-reminder', internalAuth, async (req: Request
     }
 
     // 广播给 POS：打印预约单
-    broadcastThirdPartyOrder(tenantId, {
+    await broadcastThirdPartyOrder(tenantId, {
       orderId: order.id,
       orderNumber: order.orderNumber,
       externalOrderId,

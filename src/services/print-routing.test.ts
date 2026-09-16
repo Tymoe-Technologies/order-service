@@ -12,6 +12,7 @@ import { test } from 'node:test';
 import assert from 'assert/strict';
 import {
   resolveStations, splitByStation, assignmentScope, parseAssignmentScope,
+  candidateScopes, ROLE_ONLINE_ORDER_RECEIVER,
   type RoutingStation, type RoutingRule,
 } from './print-routing';
 
@@ -211,4 +212,35 @@ test('反解认不出的 scope 返回 null，不当成合法值', () => {
   for (const bad of ['', 'station', 'hot', 'printer:1', 'station:']) {
     assert.equal(parseAssignmentScope(bad), null, `${JSON.stringify(bad)} 不该被认成合法 scope`);
   }
+});
+
+test('role: scope 能反解，且不被当成 ticket', () => {
+  assert.deepEqual(
+    parseAssignmentScope(ROLE_ONLINE_ORDER_RECEIVER),
+    { kind: 'role', role: 'ONLINE_ORDER_RECEIVER' },
+  );
+});
+
+// 下面三条守的是「网店单的收据去接单机、厨房单仍按站」这个分流。
+// 错了不会报错：收据会退回广播，多台 POS 在线时同一张单打好几份
+test('厨房单只认备餐站归属，不落到接单设备', () => {
+  assert.deepEqual(
+    candidateScopes({ ticketType: 'KITCHEN_TICKET', stationId: 's-hot' }),
+    ['station:s-hot'],
+  );
+});
+
+test('收据和标签优先给接单设备，ticket: 仅作升级期兜底', () => {
+  for (const tt of ['CUSTOMER_RECEIPT', 'ITEM_LABEL', 'CUSTOM_LABEL']) {
+    assert.deepEqual(
+      candidateScopes({ ticketType: tt, stationId: null }),
+      [ROLE_ONLINE_ORDER_RECEIVER, `ticket:${tt}`],
+      `${tt} 的候选顺序不对`,
+    );
+  }
+});
+
+test('接单设备必须排在 ticket: 之前 —— 顺序反了就等于改动没生效', () => {
+  const [first] = candidateScopes({ ticketType: 'CUSTOMER_RECEIPT' });
+  assert.equal(first, ROLE_ONLINE_ORDER_RECEIVER);
 });

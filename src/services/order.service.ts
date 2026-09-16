@@ -1490,7 +1490,7 @@ class OrderService {
         name: item.itemName,
         quantity: item.quantity,
       }));
-      broadcastDeliveryOrder(order.tenantId, {
+      await broadcastDeliveryOrder(order.tenantId, {
         orderId: order.id,
         orderNumber: order.orderNumber,
         tenantId: order.tenantId,

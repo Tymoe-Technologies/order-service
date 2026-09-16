@@ -21,7 +21,7 @@ import type {
   PrintTaskPayloadForClient,
 } from './types';
 import { taskToClientPayload } from './print-task-payload';
-import { assignmentScope } from '../services/print-routing';
+import { assignmentScope, ROLE_ONLINE_ORDER_RECEIVER } from '../services/print-routing';
 import { selectTasksForDevice, MAX_REPRINT_AGE_MS } from './pending-task-selection';
 
 let wss: WebSocketServer | null = null;
@@ -140,6 +140,43 @@ function handleMessage(ws: WebSocket, msg: WSMessage, authTimeout: NodeJS.Timeou
 
 // ========== REGISTER ==========
 
+/**
+ * 没人认领「接单设备」时，本机自动认领；已经有人就不抢。
+ *
+ * 判断条件是**归属有没有主**，不是「店里有没有第二台设备」—— 后者是个动态
+ * 状态（在线的？注册过的？离线的算不算？），而且回答不了"第二台上线时该怎么办"。
+ * 用归属本身做判断，各种情况下的行为都是对的：
+ *   单机店     → 第一台装机即自动接单，商家完全不需要知道这个设置存在
+ *   装第二台   → 归属已有主，不抢，保持关闭
+ *   要换接单机 → 设置界面手动开，走顶掉确认
+ *
+ * `createMany + skipDuplicates` 而不是「先查后写」：两台设备同时首次注册时，
+ * 先查后写会双双看到「没人认领」然后都去写，一个成功一个抛唯一约束异常。
+ * 交给数据库判重，谁先到谁得，另一个静默跳过。
+ *
+ * 认领失败不影响注册 —— 连接比接单归属重要，后者可以在设置界面补。
+ */
+async function claimOnlineOrderReceiver(
+  tenantId: string,
+  deviceId: string,
+  deviceName?: string,
+): Promise<boolean> {
+  try {
+    await prisma.printerAssignment.createMany({
+      data: [{ tenantId, scope: ROLE_ONLINE_ORDER_RECEIVER, deviceId, deviceName: deviceName ?? null }],
+      skipDuplicates: true,
+    });
+    const holder = await prisma.printerAssignment.findUnique({
+      where: { tenantId_scope: { tenantId, scope: ROLE_ONLINE_ORDER_RECEIVER } },
+      select: { deviceId: true },
+    });
+    return holder?.deviceId === deviceId;
+  } catch (err: any) {
+    logger.warn('[WS] 接单归属认领失败，不影响注册', { deviceId, error: err.message });
+    return false;
+  }
+}
+
 async function handleRegister(
   ws: WebSocket,
   msg: WSRegisterMessage,
@@ -195,13 +232,16 @@ async function handleRegister(
     clearTimeout(authTimeout);
     deviceRegistry.register(deviceId, storeId, ws);
 
+    const onlineOrderReceiver = await claimOnlineOrderReceiver(storeId, deviceId, msg.deviceName);
+
     sendMessage(ws, {
       type: 'REGISTER_ACK',
       success: true,
+      onlineOrderReceiver,
       timestamp: new Date().toISOString(),
     });
 
-    logger.info('[WS] 设备注册成功', { deviceId, storeId });
+    logger.info('[WS] 设备注册成功', { deviceId, storeId, onlineOrderReceiver });
   } catch (err: any) {
     logger.error('[WS] 注册处理异常', { error: err.message });
     sendMessage(ws, {

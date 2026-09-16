@@ -49,6 +49,16 @@ export class PrintRoutingController {
       next(error);
     }
   }
+
+  /** DELETE /print-routing/assignments/device/:deviceId —— 设备注销时释放其全部归属 */
+  async releaseDeviceAssignments(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await service.releaseDeviceAssignments(req.user!.tenantId, req.params.deviceId);
+      successResponse(res, result);
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 
 export default new PrintRoutingController();

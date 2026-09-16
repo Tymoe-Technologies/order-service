@@ -34,6 +34,8 @@ export interface WSRegisterMessage extends WSMessage {
   deviceId: string;
   storeId: string;
   token: string;
+  /** 本机名称。自动认领接单角色时一并登记，否则设置界面只能显示设备码 */
+  deviceName?: string;
 }
 
 // Server → POS: 注册确认
@@ -41,6 +43,14 @@ export interface WSRegisterAckMessage extends WSMessage {
   type: 'REGISTER_ACK';
   success: boolean;
   error?: string;
+  /**
+   * 本机是不是**接单设备**（负责网店 / 第三方来单）。
+   *
+   * 这是该开关的**真值** —— POS 本地那份只是缓存。两者不一致时以这里为准，
+   * 否则会出现「本机显示开着、归属其实在别台」，表现为网店单一直不来、
+   * 而界面上一切正常。
+   */
+  onlineOrderReceiver?: boolean;
 }
 
 // Server → POS: 新打印任务

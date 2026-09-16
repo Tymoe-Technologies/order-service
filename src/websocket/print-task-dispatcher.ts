@@ -7,7 +7,7 @@ import WebSocket from 'ws';
 import prisma from '../utils/prisma';
 import logger from '../utils/logger';
 import { deviceRegistry } from './device-registry';
-import { assignmentScope } from '../services/print-routing';
+import { candidateScopes, ROLE_ONLINE_ORDER_RECEIVER } from '../services/print-routing';
 import { sendMessage } from './ws-server';
 import { taskToClientPayload } from './print-task-payload';
 import type {
@@ -50,8 +50,9 @@ export async function dispatchPrintTasks(
       timestamp: new Date().toISOString(),
     };
 
-    const scope = assignmentScope(task);
-    const assignment = byScope.get(scope);
+    const scopes = candidateScopes(task);
+    const assignment = scopes.map((s) => byScope.get(s)).find((a) => !!a);
+    const scope = scopes[0];
 
     if (!assignment) {
       // 未登记归属：退回广播
@@ -110,16 +111,59 @@ export async function dispatchPrintTasks(
 }
 
 /**
- * 广播配送订单到在线 POS 设备
+ * 推给**接单设备**：需要人工处理的来单只该弹在一台机上。
+ *
+ * 广播的后果不是「多打一张纸」而是**竞态**：三台 POS 同时弹出「Uber Eats
+ * 新订单 · 接单/拒单」，两个人各点一下，谁赢看网络。选备餐时间同理。
+ *
+ * 没有任何设备认领接单角色时退回广播 —— 对餐厅来说「单子没人看见」
+ * 是丢单，比弹三次严重得多。但这属于配置缺失，要 warn 出来。
+ *
+ * @returns 实际推送成功的设备数
+ */
+async function sendToOnlineOrderReceiver(
+  tenantId: string,
+  msg: WSDeliveryOrderMessage | WSThirdPartyOrderMessage,
+  ctx: Record<string, unknown>,
+): Promise<{ sentCount: number; targeted: boolean }> {
+  const assignment = await prisma.printerAssignment.findUnique({
+    where: { tenantId_scope: { tenantId, scope: ROLE_ONLINE_ORDER_RECEIVER } },
+  });
+
+  if (assignment) {
+    // 主责 → fallback，和打印任务用同一套顺序
+    const target = [assignment.deviceId, assignment.fallbackDeviceId]
+      .filter((d): d is string => !!d)
+      .map((d) => deviceRegistry.getDevice(d))
+      .find((d) => d && d.ws.readyState === WebSocket.OPEN);
+
+    if (target) {
+      const ok = sendMessage(target.ws, msg);
+      return { sentCount: ok ? 1 : 0, targeted: true };
+    }
+    logger.warn('[Dispatcher] 接单设备不在线，退回广播', {
+      ...ctx, tenantId, receiverDeviceId: assignment.deviceId,
+    });
+  } else {
+    logger.warn('[Dispatcher] 未指定接单设备，退回广播', { ...ctx, tenantId });
+  }
+
+  let sentCount = 0;
+  for (const device of deviceRegistry.getDevicesByStore(tenantId)) {
+    if (device.ws.readyState === WebSocket.OPEN && sendMessage(device.ws, msg)) sentCount++;
+  }
+  return { sentCount, targeted: false };
+}
+
+/**
+ * 配送订单 → 接单设备。
  * POS 收到后展示备餐时间选择，员工选择后调用 uber service 创建配送单
  */
-export function broadcastDeliveryOrder(
+export async function broadcastDeliveryOrder(
   tenantId: string,
   delivery: WSDeliveryOrderMessage['delivery'],
-): void {
-  const devices = deviceRegistry.getDevicesByStore(tenantId);
-
-  if (devices.length === 0) {
+): Promise<void> {
+  if (deviceRegistry.getDevicesByStore(tenantId).length === 0) {
     logger.warn('[Dispatcher] 无在线设备，配送订单通知丢失', {
       tenantId,
       orderId: delivery.orderId,
@@ -133,18 +177,15 @@ export function broadcastDeliveryOrder(
     timestamp: new Date().toISOString(),
   };
 
-  let sentCount = 0;
-  for (const device of devices) {
-    if (device.ws.readyState === WebSocket.OPEN) {
-      if (sendMessage(device.ws, msg)) sentCount++;
-    }
-  }
+  const { sentCount, targeted } = await sendToOnlineOrderReceiver(
+    tenantId, msg, { orderId: delivery.orderId },
+  );
 
   logger.info('[Dispatcher] 配送订单已推送到 POS', {
     tenantId,
     orderId: delivery.orderId,
     sentCount,
-    deviceCount: devices.length,
+    targeted,
   });
 }
 
@@ -197,16 +238,14 @@ export function broadcastDeliveryStatusUpdate(
 }
 
 /**
- * 广播第三方平台来单（Uber Eats 等）到在线 POS 设备
+ * 第三方平台来单（Uber Eats 等）→ 接单设备。
  * POS 收到后弹窗展示订单，员工选择接单或拒单
  */
-export function broadcastThirdPartyOrder(
+export async function broadcastThirdPartyOrder(
   tenantId: string,
   order: WSThirdPartyOrderMessage['order'],
-): void {
-  const devices = deviceRegistry.getDevicesByStore(tenantId);
-
-  if (devices.length === 0) {
+): Promise<void> {
+  if (deviceRegistry.getDevicesByStore(tenantId).length === 0) {
     logger.warn('[Dispatcher] 无在线设备，第三方订单通知丢失', {
       tenantId,
       orderId: order.orderId,
@@ -221,12 +260,9 @@ export function broadcastThirdPartyOrder(
     timestamp: new Date().toISOString(),
   };
 
-  let sentCount = 0;
-  for (const device of devices) {
-    if (device.ws.readyState === WebSocket.OPEN) {
-      if (sendMessage(device.ws, msg)) sentCount++;
-    }
-  }
+  const { sentCount, targeted } = await sendToOnlineOrderReceiver(
+    tenantId, msg, { orderId: order.orderId, platform: order.platform },
+  );
 
   logger.info('[Dispatcher] 第三方订单已推送到 POS', {
     tenantId,
@@ -234,7 +270,7 @@ export function broadcastThirdPartyOrder(
     platform: order.platform,
     externalDisplayId: order.externalDisplayId,
     sentCount,
-    deviceCount: devices.length,
+    targeted,
   });
 }
 

@@ -11,6 +11,8 @@ import { parseAssignmentScope, assignmentScope } from './print-routing';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TICKET_TYPES = ['CUSTOMER_RECEIPT', 'KITCHEN_TICKET', 'ITEM_LABEL', 'CUSTOM_LABEL'];
+/** 可登记的业务角色。`role:` scope 的取值白名单 */
+const ASSIGNABLE_ROLES = ['ONLINE_ORDER_RECEIVER'];
 
 export interface StationInput {
   /**
@@ -157,6 +159,12 @@ export async function upsertAssignments(tenantId: string, input: AssignmentInput
     if (parsed.kind === 'station') {
       if (!UUID_RE.test(parsed.stationId)) throw new AppError(400, 'INVALID_SCOPE', `scope 不合法: ${a.scope}`);
       stationIds.add(parsed.stationId);
+    } else if (parsed.kind === 'role') {
+      // 角色是白名单，不是自由字符串 —— 拼错一个字母就是一条谁也查不到的
+      // 归属记录，而表现是「这台机再也收不到网店单」，没有任何报错
+      if (!ASSIGNABLE_ROLES.includes(parsed.role)) {
+        throw new AppError(400, 'INVALID_SCOPE', `scope 不合法: ${a.scope}`);
+      }
     } else if (!TICKET_TYPES.includes(parsed.ticketType)) {
       throw new AppError(400, 'INVALID_SCOPE', `scope 不合法: ${a.scope}`);
     }
@@ -204,6 +212,36 @@ export async function deleteAssignment(tenantId: string, scope: string) {
   const { count } = await prisma.printerAssignment.deleteMany({ where: { tenantId, scope } });
   if (count === 0) throw new AppError(404, 'ASSIGNMENT_NOT_FOUND', `没有这条归属记录: ${scope}`);
   logger.info('[PrintRouting] 打印机归属已删除', { tenantId, scope });
+}
+
+/**
+ * 释放一台设备持有的**全部**归属。设备注销 / 停用时调用。
+ *
+ * 不做这一步的后果是静默的：归属还指向一台已经不存在的设备，dispatcher
+ * 找不到它在线就把任务留在 PENDING 并告警 —— 而告警在服务端日志里，
+ * 店里看到的只是「这个站的菜从今天起不出票了」，且换机当天没人会把两件事联系起来。
+ *
+ * 接单角色同理：注销接单机之后网店单永远没人接。释放之后，下一台注册的
+ * 设备会在 REGISTER 时自动认领（见 ws-server.claimOnlineOrderReceiver）。
+ *
+ * 幂等 —— 注销流程可能重试，删零条不算错。
+ */
+export async function releaseDeviceAssignments(tenantId: string, deviceId: string) {
+  if (!deviceId) throw new AppError(400, 'INVALID_DEVICE_ID', 'deviceId 不能为空');
+
+  const { count } = await prisma.printerAssignment.deleteMany({ where: { tenantId, deviceId } });
+
+  // 主责没了但还挂着 fallback 的记录：把 fallback 提成主责，而不是留一条
+  // deviceId 指向已注销设备的僵尸记录
+  const promoted = await prisma.printerAssignment.updateMany({
+    where: { tenantId, fallbackDeviceId: deviceId },
+    data: { fallbackDeviceId: null },
+  });
+
+  logger.info('[PrintRouting] 设备归属已释放', {
+    tenantId, deviceId, released: count, fallbackCleared: promoted.count,
+  });
+  return { released: count, fallbackCleared: promoted.count };
 }
 
 /**
