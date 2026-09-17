@@ -162,6 +162,34 @@ interface CreateOrderItem {
   isSupply?: boolean;
   /** auto = 按商家规则自动加的，selected = 员工手动加的 */
   supplyOrigin?: 'auto' | 'selected';
+
+  /*
+    套餐行（和耗材行同构）。itemId 存的是 catalog_combos.id —— 也不在
+    catalog_items 里，靠 comboId 非空认出来。
+
+    comboSelections 是子项快照：这一份套餐里配了哪几样、每样选了什么选项。
+    形状和快照那条路（checkout-snapshot.service）写进 order_items 的一致，
+    多一个 modifiers —— POS 支持逐子项定制（少冰 / 加珍珠），顾客端只能
+    选子项不能定制，所以那边不会带这个字段。
+  */
+  comboId?: string;
+  comboSelections?: Array<{
+    itemId: string;
+    itemName: string;
+    quantity: number;
+    /** 子项加价，单位分 */
+    additionalPrice: number;
+    modifiers?: Array<{
+      groupId?: string;
+      optionId?: string;
+      groupName?: string;
+      optionName?: string;
+      /** 打印代码（如 `2*P`、`LS`），杯贴上单独一行 */
+      optionCode?: string;
+      unitPrice?: number;
+      quantity?: number;
+    }>;
+  }>;
 }
 
 interface CreateOrderData {
@@ -675,6 +703,24 @@ class OrderService {
             ...(item.isSupply && {
               lineKind: 'SUPPLY' as const,
               supplyOrigin: item.supplyOrigin ?? null,
+            }),
+
+            /*
+              套餐行：和耗材行同构 —— itemId 是 catalog_combos.id，不在
+              catalog_items 里，靠 comboId 非空认出来。comboSelections 是子项快照。
+
+              这两个字段原来**只有快照那条路**（Web/顾客端，见
+              createTemporaryOrderFromSnapshot）在写，可信来源这条分支整段没有，
+              于是 POS 下的套餐落库只剩「买了一个叫 X 的东西，20.50」：
+              子项、子项选的选项全丢，退款/补做/报表都查不回来，
+              厨房单和杯贴也只能印套餐名（饮品会做错）。
+              线上 260916-P01-1ZD1 就是这么丢的。
+
+              前端传什么存什么 —— POS 是可信来源，和这条分支里其他字段同一个口径。
+            */
+            ...(item.comboId && {
+              comboId: item.comboId,
+              comboSelections: item.comboSelections ?? null,
             }),
           };
         });

@@ -338,10 +338,33 @@ model OrderItem {
   modifiers      Json?    @db.Json  // 旧格式（保留兼容，新订单不再写入）
   specialNotes   String?  @map("special_notes")
 
-  // 套餐相关（非套餐行为 null）：comboId 标记这一行是套餐，comboSelections 是下单时选中的
-  // 子项快照（[{itemId, itemName, quantity, additionalPrice}]），不用 orderItemModifiers 表存——
-  // 那张表的 modifierGroupId/modifierOptionId 是 NOT NULL 且语义上指向真实 modifier 记录，
-  // 套餐子项不是 modifier，硬塞进去会污染分析查询
+  /// 套餐相关（非套餐行为 null）。**itemId 存的是 catalog_combos.id**，
+  /// 不在 catalog_items 里 —— 和耗材行同构的坑，靠 comboId 非空认出来。
+  ///
+  /// comboSelections 是下单那一刻的子项快照：
+  /// `[{ itemId, itemName, quantity, additionalPrice, modifiers? }]`
+  ///   · itemId 是**真实的** catalog_items.id（出票时拿它查配方、译名、分类）
+  ///   · additionalPrice 单位分
+  ///   · modifiers 是**这个子项自己**选的选项 `[{ groupId, optionId, groupName,
+  ///     optionName, optionCode, unitPrice, quantity }]`。POS 支持逐子项定制
+  ///     （一杯少冰一杯加珍珠），顾客端只能选子项、不带这个字段。
+  ///     **少了它厨房单上的饮品会做错** —— 票面只剩子项名字，看不出选了什么。
+  ///
+  /// 为什么不用 orderItemModifiers 表存：那张表的 modifierGroupId/modifierOptionId
+  /// 是 NOT NULL 且语义上指向真实 modifier 记录，套餐子项不是 modifier，
+  /// 硬塞进去会污染分析查询。
+  ///
+  /// ## 两条写入路径都要记得写
+  /// 快照路径（Web/顾客端，checkout-snapshot.service）和可信路径（POS，
+  /// order.service 的 clientOrigin=POS 分支）**各写一遍**。可信路径原来整段没写，
+  /// 于是 POS 下的套餐只剩一个套餐名（线上 260916-P01-1ZD1 就是这么丢的）。
+  ///
+  /// ## 子项不是独立的行
+  /// 钱和税都挂在套餐这一行上（税按子项标价权重分摊，见 comboAllocation）。
+  /// 出票时由客户端展开成子项行（POS 的 utils/comboLine）。
+  /// 代价：**厨房单的分站路由只能按套餐自己的 categoryId 走** ——
+  /// 一份「饮品 + 热食」套餐会整份进同一个站。要按子项分站得把子项落成
+  /// 真正的子行（parentItemId 自关联），那要动钱和退款，另说。
   comboId        String?  @map("combo_id") @db.Uuid
   comboSelections Json?   @map("combo_selections") @db.Json
 
