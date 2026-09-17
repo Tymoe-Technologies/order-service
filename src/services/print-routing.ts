@@ -179,6 +179,41 @@ export function splitByStation<T extends RoutableLine>(
   });
 }
 
+/** 厨房单拆分方式。ORDER = 整单一张（按站拆后每站一张）；ITEM = 每个商品一张 */
+export type KitchenSplitMode = 'ORDER' | 'ITEM';
+
+/**
+ * 把按站拆好的分组**再按商品拆开**。`splitByStation` 之后调用。
+ *
+ * 按**订单行**拆，不按份数：一行「宫保鸡丁 ×3」出一张票、票上印 ×3，
+ * 而不是三张。份数级的拆分是商品标签的活（贴在餐盒上），
+ * 厨房单要的是「这道菜要做」。
+ *
+ * `stationIndex / stationTotal` 在拆完之后**跨站重编**，因为它的用途是
+ * 「厨房少收一张能立刻发现」（架构文档 §5.1）—— 编号必须覆盖这一单的
+ * 全部票，按站各编各的就数不出总数了。ORDER 模式下的语义不变
+ * （每站一张时，站序号恰好等于票序号）。
+ *
+ * `coStations` 和 `unroutedLineIds` 要收窄到这一行：不收窄的话每张单
+ * 都印着别的行的「同时在 X 站」，厨师会以为自己这张漏了东西。
+ */
+export function splitByItem<T extends RoutableLine>(
+  groups: Array<StationGroup<T>>,
+  mode: KitchenSplitMode,
+): Array<StationGroup<T>> {
+  if (mode !== 'ITEM') return groups;
+
+  const perItem = groups.flatMap((g) =>
+    g.lines.map((line) => ({
+      ...g,
+      lines: [line],
+      coStations: g.coStations[line.id] ? { [line.id]: g.coStations[line.id] } : {},
+      unroutedLineIds: g.unroutedLineIds.includes(line.id) ? [line.id] : [],
+    })),
+  );
+  return perItem.map((g, i) => ({ ...g, stationIndex: i + 1, stationTotal: perItem.length }));
+}
+
 /**
  * 打印职责的作用域键（PrinterAssignment.scope）。
  *

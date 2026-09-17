@@ -17,7 +17,7 @@
 import prisma from '../utils/prisma';
 import logger from '../utils/logger';
 import type { PrintTaskSource } from './types';
-import { splitByStation, type RoutingStation, type RoutingRule } from '../services/print-routing';
+import { splitByStation, splitByItem, type RoutingStation, type RoutingRule, type KitchenSplitMode } from '../services/print-routing';
 
 /**
  * 这一行是耗材还是真商品。
@@ -210,10 +210,21 @@ export async function generatePrintTasksForOrder(
         （客户端渲染时也会再滤一次，两边都做是因为**任一端漏掉都会印出来**，
         而这一端滤掉还能少生成任务。）
       */
-      const groups = splitByStation(
-        order.orderItems.filter((it) => !isSupplyLine(it)),
-        routing?.stations || [],
-        routing?.rules || [],
+      /*
+        拆分方式来自这张票的 config（Portal 上配的）。**拿不到就按 ORDER** ——
+        那是升级前的行为；猜错顶多少拆几张，猜成 ITEM 则凭空多出一叠纸。
+        POS 本机那条路用同一个默认值（见 printSettingService.getKitchenSplitMode）。
+      */
+      const splitMode: KitchenSplitMode =
+        (setting.config as any)?.splitMode === 'ITEM' ? 'ITEM' : 'ORDER';
+
+      const groups = splitByItem(
+        splitByStation(
+          order.orderItems.filter((it) => !isSupplyLine(it)),
+          routing?.stations || [],
+          routing?.rules || [],
+        ),
+        splitMode,
       );
       for (const g of groups) {
         tasks.push({
@@ -229,6 +240,9 @@ export async function generatePrintTasksForOrder(
             // 只带行 id，不复制商品对象 —— orderData 里已经有全量，
             // 复制一份会让 payload 随站数翻倍，而且两份数据早晚会不一致
             lineIds: g.lines.map((l) => l.id),
+            // POS 端靠它把去重键按行区分（见 comboKeyOf）——
+            // 不标的话每站 N 张单只有第一张能进队列
+            ...(splitMode === 'ITEM' ? { perItem: true } : {}),
             stationIndex: g.stationIndex,
             stationTotal: g.stationTotal,
             coStations: g.coStations,

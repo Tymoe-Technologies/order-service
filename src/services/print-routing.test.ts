@@ -11,7 +11,7 @@
 import { test } from 'node:test';
 import assert from 'assert/strict';
 import {
-  resolveStations, splitByStation, assignmentScope, parseAssignmentScope,
+  resolveStations, splitByStation, splitByItem, assignmentScope, parseAssignmentScope,
   candidateScopes, ROLE_ONLINE_ORDER_RECEIVER,
   type RoutingStation, type RoutingRule,
 } from './print-routing';
@@ -243,4 +243,44 @@ test('收据和标签优先给接单设备，ticket: 仅作升级期兜底', () 
 test('接单设备必须排在 ticket: 之前 —— 顺序反了就等于改动没生效', () => {
   const [first] = candidateScopes({ ticketType: 'CUSTOMER_RECEIPT' });
   assert.equal(first, ROLE_ONLINE_ORDER_RECEIVER);
+});
+
+// ── 每个商品一张（splitByItem）───────────────────────────────
+// 和 POS 仓 stationRouting.test.ts 的同名用例**逐条对应**，改一边必须同步另一边
+
+test('ITEM 拆分：ORDER 模式原样返回，不动分组', () => {
+  const groups = splitByStation([line('l1', 'i-kungpao'), line('l2', 'i-tea')], [HOT], []);
+  assert.deepEqual(splitByItem(groups, 'ORDER'), groups);
+});
+
+test('ITEM 拆分：一个站 N 行拆成 N 张，每张只带自己那行', () => {
+  const groups = splitByStation([line('l1', 'i-kungpao'), line('l2', 'i-tea')], [HOT], []);
+  const out = splitByItem(groups, 'ITEM');
+  assert.deepEqual(out.map((g) => g.lines.map((l) => l.id)), [['l1'], ['l2']]);
+});
+
+test('ITEM 拆分：第 X / 共 Y 张跨站连续编号 —— 少一张要能数出来', () => {
+  const rules: RoutingRule[] = [{ stationId: COLD.id, matchType: 'ITEM', matchId: 'i-salad' }];
+  const out = splitByItem(splitByStation([line('l1', 'i-kungpao'), line('l2', 'i-salad')], STATIONS, rules), 'ITEM');
+  assert.deepEqual(out.map((g) => [g.stationIndex, g.stationTotal]), [[1, 2], [2, 2]]);
+});
+
+test('ITEM 拆分：coStations 收窄到本行，不印别行的「同时在 X 站」', () => {
+  const rules: RoutingRule[] = [
+    { stationId: HOT.id, matchType: 'ITEM', matchId: 'i-tea' },
+    { stationId: PACK.id, matchType: 'ITEM', matchId: 'i-tea' },
+    { stationId: HOT.id, matchType: 'ITEM', matchId: 'i-kungpao' },
+  ];
+  const out = splitByItem(splitByStation([line('l1', 'i-kungpao'), line('l2', 'i-tea')], STATIONS, rules), 'ITEM');
+  const kungpao = out.find((g) => g.lines[0].id === 'l1')!;
+  assert.deepEqual(kungpao.coStations, {});                       // 只在热菜站
+  const teaAtHot = out.find((g) => g.lines[0].id === 'l2' && g.stationId === HOT.id)!;
+  assert.deepEqual(teaAtHot.coStations, { l2: ['打包台'] });
+});
+
+test('ITEM 拆分：unroutedLineIds 也收窄到本行', () => {
+  const rules: RoutingRule[] = [{ stationId: HOT.id, matchType: 'ITEM', matchId: 'i-kungpao' }];
+  // l2 没配规则，兜底进热菜站 —— 只有它该带 ⚠
+  const out = splitByItem(splitByStation([line('l1', 'i-kungpao'), line('l2', 'i-new')], STATIONS, rules), 'ITEM');
+  assert.deepEqual(out.map((g) => [g.lines[0].id, g.unroutedLineIds]), [['l1', []], ['l2', ['l2']]]);
 });

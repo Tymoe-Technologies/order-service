@@ -40,6 +40,18 @@ export const STORE_OVERRIDABLE_PATHS = [
     旗下门店用同一种纸，票据才长得一样。
   */
   'style.printDensity',
+  /*
+    厨房单拆分方式（整单一张 / 每个商品一张）归门店。
+
+    它跟着**后厨流程**走，不是版式偏好：大店三个备餐站、出餐靠单据分派，
+    逐商品一张才好用；小店一个灶台，整单一张就够。而备餐站本身已经是
+    按门店存的（PrintStation.tenantId），拆分方式跟着品牌走会和它自相矛盾 ——
+    分店能加备餐站却不能决定怎么拆单。
+
+    不放进来的后果更糟：表单上这一项没有 brandLocked 禁用，分店改完保存
+    会被 pickOverridable 静默丢掉，界面上还显示成改过了。
+  */
+  'splitMode',
 ] as const;
 
 const get = (o: any, path: string): any =>
