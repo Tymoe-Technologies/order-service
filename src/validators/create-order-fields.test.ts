@@ -164,6 +164,70 @@ describe('建单 validator 的字段清单', () => {
       `带耗材行的请求被拒了：${error?.details.map(d => d.message).join('; ')}`)
   })
 
+  /*
+    套餐行同理，而且后果更重：这是**收了钱之后**的建单请求，被 400 掉
+    就是一笔已收款的单落不了库（POS 会当成网络失败进离线队列，然后一直补传一直被拒）。
+    2026-09-17 之前这两个字段根本没人发，所以这条测试是新逻辑的唯一守门人。
+  */
+  test('带套餐行（含逐子项选项）的建单请求真的能通过校验', () => {
+    const { error } = createOrderSchema.validate({
+      orderType: 'TAKEOUT',
+      items: [
+        // 套餐行：itemId 是 catalog_combos.id，不在 catalog_items 里
+        {
+          itemId: '33333333-3333-4333-8333-333333333333',
+          itemName: '双人下午茶',
+          quantity: 1,
+          unitPrice: 2050,
+          comboId: '33333333-3333-4333-8333-333333333333',
+          comboSelections: [
+            {
+              itemId: '44444444-4444-4444-8444-444444444444',
+              itemName: 'Mango Tea',
+              quantity: 1,
+              additionalPrice: 0,
+            },
+            {
+              itemId: '55555555-5555-4555-8555-555555555555',
+              itemName: 'Black Milk Tea',
+              quantity: 2,
+              additionalPrice: 550,
+              // POS 支持逐子项定制 —— 少了这一段厨房单上的饮品会做错
+              modifiers: [{
+                groupId: '66666666-6666-4666-8666-666666666666',
+                optionId: '77777777-7777-4777-8777-777777777777',
+                groupName: '糖度',
+                optionName: '少糖',
+                optionCode: 'LS',
+                unitPrice: 0,
+                quantity: 1,
+              }],
+            },
+          ],
+        },
+      ],
+    }, { abortEarly: false })
+    assert.equal(error, undefined,
+      `带套餐行的请求被拒了：${error?.details.map(d => d.message).join('; ')}`)
+  })
+
+  test('顾客端那种「只选子项、不带 modifiers」的套餐行也放行', () => {
+    const { error } = createOrderSchema.validate({
+      orderType: 'TAKEOUT',
+      items: [{
+        itemId: '33333333-3333-4333-8333-333333333333',
+        itemName: '双人下午茶', quantity: 1, unitPrice: 2000,
+        comboId: '33333333-3333-4333-8333-333333333333',
+        comboSelections: [{
+          itemId: '44444444-4444-4444-8444-444444444444',
+          itemName: 'Mango Tea', quantity: 1, additionalPrice: 0,
+        }],
+      }],
+    }, { abortEarly: false })
+    assert.equal(error, undefined,
+      `不带 modifiers 的套餐行被拒了：${error?.details.map(d => d.message).join('; ')}`)
+  })
+
   test('supplyOrigin 两个取值都放行（auto = 规则加的，selected = 员工加的）', () => {
     for (const origin of ['auto', 'selected']) {
       const { error } = createOrderSchema.validate({

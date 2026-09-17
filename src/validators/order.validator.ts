@@ -75,6 +75,37 @@ export const createOrderSchema = Joi.object({
         */
         isSupply: Joi.boolean().optional(),
         supplyOrigin: Joi.string().valid('auto', 'selected').optional().allow(null),
+
+        /*
+          套餐行。itemId 存的是 catalog_combos.id，comboSelections 是子项快照。
+          同上：不放行整个请求就是 400，而这是**收了钱之后**的建单请求 ——
+          耗材那一条的教训就是这么来的。
+
+          子项里的金额故意**不设下限**：这些数只是快照（真正收的钱是上面那个
+          已经校过的 unitPrice），而 POS 是可信来源。商家把某个子项配成负加价
+          之类的边角情况，不该让一笔已经收款的单落不了库。
+        */
+        comboId: Joi.string().uuid().optional(),
+        comboSelections: Joi.array().items(
+          Joi.object({
+            itemId: Joi.string().uuid().required(),
+            itemName: Joi.string().max(255).allow('').required(),
+            quantity: Joi.number().integer().min(1).required(),
+            additionalPrice: Joi.number().integer().required(),
+            /* 逐子项定制（少冰/加珍珠）。顾客端不带这个字段，POS 才有 */
+            modifiers: Joi.array().items(
+              Joi.object({
+                groupId: Joi.string().uuid().optional(),
+                optionId: Joi.string().uuid().optional(),
+                groupName: Joi.string().allow('', null).optional(),
+                optionName: Joi.string().allow('', null).optional(),
+                optionCode: Joi.string().allow('', null).optional(),
+                unitPrice: Joi.number().integer().optional(),
+                quantity: Joi.number().integer().min(1).optional(),
+              }),
+            ).optional(),
+          }),
+        ).optional(),
       })
     )
     .min(1)

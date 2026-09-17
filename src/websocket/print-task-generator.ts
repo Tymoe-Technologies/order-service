@@ -30,20 +30,67 @@ import { splitByStation, splitByItem, type RoutingStation, type RoutingRule, typ
 const isSupplyLine = (line: { lineKind?: string }): boolean => line.lineKind === 'SUPPLY';
 
 /**
- * 要出标签的行 + 它们在**原数组**里的下标。
+ * 套餐子项（出标签用）。
+ *
+ * ## ⚠️ 这个筛选规则和 POS 的 `utils/comboLine.comboChildrenOf` 必须一致
+ * 服务端只在 payload 里带 `comboChildIndex` 这一个数字，客户端是拿
+ * **自己**摊开后的数组按这个下标取子项的。两边的过滤规则（`itemId` 非空）
+ * 或顺序错开一点，标签上就印成**另一个子项**的名字和配方 ——
+ * 和 `itemIndex` 那条一样，是不会报错的静默错误。
+ * 两边各钉一组同样的测试（POS: comboLine.test.ts）。
+ */
+const comboChildrenOf = (line: any): any[] => {
+  const raw = line?.comboSelections;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((c: any) => !!c?.itemId);
+};
+
+/** 一个「标签单位」：要打几张、客户端怎么反查这一行 */
+export interface LabelUnit<T> {
+  /** 这一行（套餐子项时是**套餐那一行**，子项不在 order_items 里） */
+  item: T;
+  /** **原数组**的下标 */
+  index: number;
+  /** 套餐子项下标；普通行不带。客户端摊开套餐后按它取子项 */
+  comboChildIndex?: number;
+  /** 这一单位要出几张标签（套餐 ×2 里的 1 杯奶茶 = 2 张） */
+  quantity: number;
+}
+
+/**
+ * 要出标签的「单位」+ 它们在**原数组**里的下标。
  *
  * 下标必须是原数组的：payload 里只带 `itemIndex`，客户端是拿
  * `orderData.orderItems[itemIndex]` 取回那一行的。用过滤后的下标会
  * **取到错误的商品** —— 标签上印着别的菜名，而这种错没有任何报错。
  *
+ * **套餐按子项摊开**：杯贴是贴在杯子上的，一份三杯的套餐要出三张、
+ * 各自带自己的配方。原来套餐只出一张、印着套餐名，另外两个杯子没贴纸。
+ *
  * 导出只为单测。
  */
 export function labelLinesWithIndex<T extends { lineKind?: string; quantity: number }>(
   orderItems: T[],
-): Array<{ item: T; index: number }> {
-  return orderItems
-    .map((item, index) => ({ item, index }))
-    .filter(({ item }) => !isSupplyLine(item));
+): Array<LabelUnit<T>> {
+  const units: Array<LabelUnit<T>> = [];
+  orderItems.forEach((item, index) => {
+    if (isSupplyLine(item)) return;
+    const lineQty = Number(item.quantity) || 1;
+    const children = comboChildrenOf(item);
+    if (children.length === 0) {
+      units.push({ item, index, quantity: lineQty });
+      return;
+    }
+    children.forEach((child, comboChildIndex) => {
+      units.push({
+        item,
+        index,
+        comboChildIndex,
+        quantity: (Number(child?.quantity) || 1) * lineQty,
+      });
+    });
+  });
+  return units;
 }
 
 // OrderSource -> PrintTaskSource 映射
@@ -97,6 +144,14 @@ interface OrderWithItems {
     discountAmount: number;
     attributes: any;
     specialNotes: string | null;
+    /**
+     * 套餐子项快照（非套餐行为 null）。见 OrderItem.comboSelections。
+     *
+     * 出票要用它：收据列出套餐装了什么、厨房单印出各子项及其选项、
+     * 杯贴**按子项一杯一张**（见 labelLinesWithIndex）。
+     */
+    comboId?: string | null;
+    comboSelections?: any;
     orderItemModifiers: Array<{
       groupName: string;
       optionName: string;
@@ -162,11 +217,13 @@ export async function generatePrintTasksForOrder(
         改成过滤后的下标会取到错误的商品。
       */
       const labelIdx = labelLinesWithIndex(order.orderItems);
-      const totalLabels = labelIdx.reduce((sum, { item }) => sum + item.quantity, 0);
+      // 用单位自己的 quantity，不是行的 —— 套餐行的 quantity 是「几份套餐」，
+      // 一份里有几杯要看子项（见 labelLinesWithIndex）
+      const totalLabels = labelIdx.reduce((sum, u) => sum + u.quantity, 0);
       let globalSeq = 0;
 
-      for (const { item, index: i } of labelIdx) {
-        for (let q = 0; q < item.quantity; q++) {
+      for (const { index: i, comboChildIndex, quantity: unitQty } of labelIdx) {
+        for (let q = 0; q < unitQty; q++) {
           globalSeq++;
           // 每张 item label 使用偶数 priority slot
           const itemLabelPriority = LABEL_PRIORITY_BASE + labelSeq * 2;
@@ -181,6 +238,8 @@ export async function generatePrintTasksForOrder(
             payload: {
               orderData: order,
               itemIndex: i,
+              // 套餐子项才有。客户端摊开 orderItems[i] 后按它取那一个子项
+              ...(comboChildIndex != null ? { comboChildIndex } : {}),
               itemQuantity: globalSeq,
               totalQuantity: totalLabels,
             },
@@ -218,6 +277,14 @@ export async function generatePrintTasksForOrder(
       const splitMode: KitchenSplitMode =
         (setting.config as any)?.splitMode === 'ITEM' ? 'ITEM' : 'ORDER';
 
+      /*
+        ponytail: 套餐整份按**套餐自己的** categoryId 路由，子项不各自分站。
+        一份「饮品 + 热食」套餐会整份进同一个站（子项在票面上都印出来了，
+        客户端会摊开渲染，所以不会漏做，但可能印在错误的站）。
+        升级路径：子项落成真正的子行（OrderItem.parentItemId 自关联），
+        那样这里和 POS 的 localPrintTasks 都一个字不用改 —— 但要动钱和退款，
+        见 schema-order.prisma 里 comboSelections 那段。
+      */
       const groups = splitByItem(
         splitByStation(
           order.orderItems.filter((it) => !isSupplyLine(it)),
