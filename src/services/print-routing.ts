@@ -256,11 +256,22 @@ export const ROLE_ONLINE_ORDER_RECEIVER = 'role:ONLINE_ORDER_RECEIVER';
  */
 export const candidateScopes = (
   task: { ticketType: string; stationId?: string | null },
-): string[] => (
-  task.ticketType === 'KITCHEN_TICKET'
-    ? [assignmentScope(task)]
-    : [ROLE_ONLINE_ORDER_RECEIVER, assignmentScope(task)]
-);
+): string[] => {
+  /*
+    **带站的厨房单**按备餐站定向，就这一条，不兜底到接单设备 ——
+    热菜站的单跑到收银机上打是错的，宁可留 PENDING 加告警。
+  */
+  if (task.ticketType === 'KITCHEN_TICKET' && task.stationId) return [assignmentScope(task)];
+
+  /*
+    **不带站的厨房单**（店里一个备餐站都没配）和收据标签一样，交给接单设备。
+
+    这里曾经查 `ticket:KITCHEN_TICKET`，而那条归属现在 POS 已经不写了 ——
+    它代表的是「本机直打」，语义是每台机各留各的，登记成全店唯一会让
+    第二台设备永远不打。保留它作为第二候选只为了升级期的存量记录。
+  */
+  return [ROLE_ONLINE_ORDER_RECEIVER, assignmentScope(task)];
+};
 
 /** 反解，供设置界面和校验用 */
 export const parseAssignmentScope = (

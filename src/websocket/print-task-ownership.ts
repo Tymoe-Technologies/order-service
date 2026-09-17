@@ -19,17 +19,25 @@
  *   归属存在 且 归属设备 ≠ 下单设备  →  服务端生成，定向推
  *   其余（没登记归属 / 归属就是自己）→  下单设备本地打
  *
- * ## 收据和标签永远不转交
- * 收据要从顾客面前那台出，标签贴在下单那台旁边。哪怕它们也登记了归属
- * （设置界面对每种票据都会上报），POS 单的这两类也一律本地。
+ * ## 收据、标签、以及不带站的厨房单永远不转交
+ * 收据要从顾客面前那台出，标签贴在下单那台旁边，不带站的厨房单是
+ * 「本机直打」的全量底单 —— 这三类都是**每台机各留各的**，POS 单一律本地。
  * 非 POS 来源（Web/Uber）不走这里，仍然按归属定向推 —— 那时候
- * 「顾客面前那台」不存在，收据本来就该去登记的那台。
+ * 「顾客面前那台」不存在，这些票本来就该去接单设备。
  */
 
 import { assignmentScope } from '../services/print-routing';
 
-/** 只有厨房单可以转交给别的设备 */
-const TRANSFERABLE = new Set(['KITCHEN_TICKET']);
+/**
+ * 只有**带备餐站的**厨房单可以转交给别的设备。
+ *
+ * 不带站的那张是「本机直打」——语义和收据一样：每台机各留各的全量底单。
+ * 它曾经也会被转交（`ticket:KITCHEN_TICKET` 有归属时），后果是第二台设备
+ * 配了本机直打却一张都不打：POS 那边 `ownsStation` 判定归属在别台直接跳过，
+ * 服务端这边又把它推给了那台 —— 两边都"对"，商家看到的是设置不起作用。
+ */
+const transferable = (t: OwnableTask): boolean =>
+  t.ticketType === 'KITCHEN_TICKET' && !!t.stationId;
 
 export interface OwnableTask {
   ticketType: string;
@@ -50,7 +58,7 @@ export function tasksForOtherDevices<T extends OwnableTask>(
 ): T[] {
   if (!orderDeviceId) return [];
   return tasks.filter((t) => {
-    if (!TRANSFERABLE.has(t.ticketType)) return false;
+    if (!transferable(t)) return false;
     const owner = assignments.get(assignmentScope(t as any));
     return !!owner && owner !== orderDeviceId;
   });

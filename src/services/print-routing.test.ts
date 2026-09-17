@@ -223,10 +223,20 @@ test('role: scope 能反解，且不被当成 ticket', () => {
 
 // 下面三条守的是「网店单的收据去接单机、厨房单仍按站」这个分流。
 // 错了不会报错：收据会退回广播，多台 POS 在线时同一张单打好几份
-test('厨房单只认备餐站归属，不落到接单设备', () => {
+test('带站的厨房单只认备餐站归属，不落到接单设备', () => {
   assert.deepEqual(
     candidateScopes({ ticketType: 'KITCHEN_TICKET', stationId: 's-hot' }),
     ['station:s-hot'],
+  );
+});
+
+// 不带站 = 店里没配备餐站。它和收据标签一样该交给接单设备 ——
+// 原来查 ticket:KITCHEN_TICKET，而那条归属代表「本机直打」，
+// 登记成全店唯一会让第二台设备永远不打
+test('不带站的厨房单交给接单设备，ticket: 仅作升级期兜底', () => {
+  assert.deepEqual(
+    candidateScopes({ ticketType: 'KITCHEN_TICKET' }),
+    [ROLE_ONLINE_ORDER_RECEIVER, 'ticket:KITCHEN_TICKET'],
   );
 });
 

@@ -38,10 +38,21 @@ describe('tasksForOtherDevices', () => {
     assert.deepEqual(tasksForOtherDevices([kitchen('s1')], new Map(), ME), [])
   })
 
-  test('没有备餐站的厨房单（ticket:KITCHEN_TICKET）同样适用', () => {
+  /*
+    **不带站的厨房单永不转交**，哪怕 ticket:KITCHEN_TICKET 上还挂着别台的归属。
+
+    它是「本机直打」那条通道 —— 语义和收据一样，每台机各留各的全量底单。
+    原来会转交，后果是第二台设备配了本机直打却一张都不打：
+    POS 那边 ownsStation 判定归属在别台直接跳过，服务端这边又把它推给了那台，
+    两边都"对"，而商家看到的是设置不起作用。
+
+    存量里可能还留着旧版本写下的那条归属（设置界面已经不再写了），
+    所以这里要显式断言「有归属也不转交」，不能只测「没归属」。
+  */
+  test('不带站的厨房单永不转交（本机直打，每台机各留各的）', () => {
     const t = { ticketType: 'KITCHEN_TICKET', stationId: null }
-    assert.equal(tasksForOtherDevices([t], owners({ 'ticket:KITCHEN_TICKET': OTHER }), ME).length, 1)
-    assert.equal(tasksForOtherDevices([t], owners({ 'ticket:KITCHEN_TICKET': ME }), ME).length, 0)
+    assert.deepEqual(tasksForOtherDevices([t], owners({ 'ticket:KITCHEN_TICKET': OTHER }), ME), [])
+    assert.deepEqual(tasksForOtherDevices([t], owners({ 'ticket:KITCHEN_TICKET': ME }), ME), [])
   })
 
   /*
