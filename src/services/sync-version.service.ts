@@ -1,4 +1,5 @@
 import prisma from '../utils/prisma';
+import organizationService from './organization.service';
 
 /**
  * POS 同步用的版本号（order-service 负责的那几类数据）
@@ -50,10 +51,22 @@ export async function getChannelVersion(tenantId: string): Promise<string> {
  * 表里本来就有 `version Int` 列，但这里用 updated_at 而不是它：
  * `@updatedAt` 由 Prisma 保证每次写入都动，而 `version` 要靠写入方记得自增 ——
  * 少写一处就会出现「配置改了、版本号没动」，POS 永久用着旧的打印格式。
+ *
+ * ## 必须把**品牌那条**也算进去
+ *
+ * 分店读到的是「品牌模板 + 本店覆盖」的合并结果（见 print-setting.service
+ * 的 getSettings），所以品牌那条一改，分店读到的内容就变了 ——
+ * 可分店**自己那条记录没动**。只按 `tenantId` 聚合的话版本号纹丝不动，
+ * 同步引擎直接跳过，表现是「总部改了打印格式，分店的 POS 永远还是旧的」，
+ * 而且没有任何报错，只能靠人去打印设置面板点一次「同步」才会发现。
+ *
+ * 主店自己调用时 main === tenantId，`in` 去重后就是原来那一条，行为不变。
  */
 export async function getPrintSettingVersion(tenantId: string): Promise<string> {
+  const mainOrgId = await organizationService.resolveMainOrgId(tenantId);
+  const scope = mainOrgId === tenantId ? [tenantId] : [tenantId, mainOrgId];
   const agg = await prisma.printSetting.aggregate({
-    where: { tenantId },
+    where: { tenantId: { in: scope } },
     _count: { _all: true },
     _max: { updatedAt: true },
   });
