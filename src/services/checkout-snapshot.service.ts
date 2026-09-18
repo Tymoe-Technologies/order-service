@@ -84,6 +84,15 @@ interface CreateSnapshotDto {
     comboId?: string
     // 套餐可选分组里顾客选中的 combo_item id 列表（固定必选子项不用传，后端自动带上）
     selectedComboItemIds?: string[]
+    /**
+     * 套餐**每个子项自己**选的选项（甜度 / 冰量 / 加料）：
+     * `{ [comboItemId]: { [groupId]: [optionId] } }`
+     *
+     * 形状就是普通商品行 `selectedOptions` 多套一层子项 id。
+     * 和普通商品行同一个待遇：**id 要核、价要重新取**，顾客端算的钱一律不信。
+     * 不传 = 这份套餐的子项都没有选项要选（老版本前端也不传）。
+     */
+    comboItemOptions?: Record<string, Record<string, string[]>>
   }>
   tipAmount?: number
   notes?: string
@@ -475,6 +484,54 @@ function extractVerifiedModifiers(
   return result
 }
 
+/**
+ * 套餐**每个子项**自己选的选项（甜度 / 冰量 / 加料）的核对与计价。
+ *
+ * 走和普通商品行**完全同一个** `extractVerifiedModifiers`：按子项商品的
+ * `item_modifier_groups` 核对 groupId / optionId 是不是真的属于这个商品，
+ * 再从 `item_modifier_prices` / `default_price` 重新取价 ——
+ * **顾客端传上来的价一个字都不信**，否则伪造一个 optionId 就能白嫖加料。
+ *
+ * 三条边界：
+ *   · 只看 `chosenComboItems`：顾客先选 A 给 A 配了加料、又改选 B，
+ *     A 那份还留在请求里 —— 按它收钱等于收一份没卖出去的东西
+ *   · 核不上的 id 静默丢掉（同普通商品行的既有行为，不报错）
+ *   · 键是 **comboItemId**（combo_items 那一行的 id），不是 itemId：
+ *     同一个商品可以在一个套餐里出现两次（分属不同分组），
+ *     按 itemId 归并会让两杯共用一份选项
+ *
+ * 子项商品的 `item_modifier_groups` 就在 `itemPrices` 里（那批数据本来就为了
+ * 子项税率和标价查过一遍），所以这里不发任何请求，也因此是纯函数、可测。
+ *
+ * 导出只为单测。
+ */
+export function verifyComboItemOptions(
+  chosenComboItems: any[],
+  comboItemOptions: Record<string, Record<string, string[]>> | undefined,
+  itemPrices: any[],
+): {
+  /** comboItemId -> 核过的选项 */
+  perChild: Map<string, ReturnType<typeof extractVerifiedModifiers>>
+  /** 这些选项一共该加多少钱（分，单份套餐） */
+  total: number
+} {
+  const perChild = new Map<string, ReturnType<typeof extractVerifiedModifiers>>()
+  let total = 0
+  if (!comboItemOptions) return { perChild, total }
+
+  for (const ci of chosenComboItems || []) {
+    const picked = comboItemOptions[ci?.id]
+    if (!picked || Object.keys(picked).length === 0) continue
+    const childItem = (itemPrices || []).find((p: any) => p.id === ci?.item?.id)
+    if (!childItem) continue
+    const verified = extractVerifiedModifiers(picked, childItem.item_modifier_groups)
+    if (verified.length === 0) continue
+    perChild.set(ci.id, verified)
+    total += verified.reduce((s, m) => s + m.unitPrice * m.quantity, 0)
+  }
+
+  return { perChild, total }
+}
 
 /**
  * 创建结账快照（后端验证价格）
@@ -570,7 +627,12 @@ export async function createCheckoutSnapshot(
         const additionalPriceTotal = chosenComboItems.reduce(
           (sum, ci) => sum + (parseInt(String(ci.additional_price), 10) || 0), 0
         )
-        const realUnitPrice = comboBasePrice + additionalPriceTotal
+
+        // 每个子项自己选的选项（甜度 / 冰量 / 加料）。见 verifyComboItemOptions
+        const { perChild: perChildModifiers, total: childModifierTotal } =
+          verifyComboItemOptions(chosenComboItems, item.comboItemOptions, itemPrices)
+
+        const realUnitPrice = comboBasePrice + additionalPriceTotal + childModifierTotal
 
         // 按子项商品的单卖标价(× quantity)做权重分摊计税，子项各自税率不同也能算对
         // （跟 POS 前端 taxCalculation.ts 的套餐分摊算法是同一个思路）
@@ -589,6 +651,7 @@ export async function createCheckoutSnapshot(
           quantity: item.quantity,
           comboBasePrice,
           additionalPriceTotal,
+          childModifierTotal,
           realUnitPrice,
           chosenComboItemCount: chosenComboItems.length,
         })
@@ -606,13 +669,36 @@ export async function createCheckoutSnapshot(
           isCombo: true,
           comboId: item.comboId,
           comboAllocation,
-          // 落库到 OrderItem.comboSelections 的快照，供收据/厨房显示这份套餐具体选了什么
-          comboSelections: chosenComboItems.map((ci: any) => ({
-            itemId: ci.item?.id,
-            itemName: ci.item?.name,
-            quantity: ci.quantity,
-            additionalPrice: parseInt(String(ci.additional_price), 10) || 0,
-          })),
+          /*
+            落库到 OrderItem.comboSelections 的快照，供收据/厨房/杯贴显示这份套餐
+            具体选了什么、每样怎么做。形状见 schema-order.prisma 上的说明。
+
+            modifiers 里存的是**核过的**那份（不是顾客传的原文），字段名对齐
+            POS 发上来的形状 —— 两条路径写进同一列，读的人只认一种形状。
+            少了它厨房单上只有子项名字，饮品会做错。
+          */
+          comboSelections: chosenComboItems.map((ci: any) => {
+            const mods = perChildModifiers.get(ci.id)
+            return {
+              itemId: ci.item?.id,
+              itemName: ci.item?.name,
+              quantity: ci.quantity,
+              additionalPrice: parseInt(String(ci.additional_price), 10) || 0,
+              ...(mods?.length
+                ? {
+                    modifiers: mods.map(m => ({
+                      groupId: m.groupId,
+                      optionId: m.optionId,
+                      groupName: m.groupName,
+                      optionName: m.optionName,
+                      optionCode: m.optionCode,
+                      unitPrice: m.unitPrice,
+                      quantity: m.quantity,
+                    })),
+                  }
+                : {}),
+            }
+          }),
         }
       }
 
