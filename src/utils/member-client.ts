@@ -116,6 +116,11 @@ export async function getConsumerIdByMemberId(memberId: string): Promise<string 
 export async function useGrantedReward(params: {
   grantedRewardId: string;
   orderId: string;
+  /**
+   * 下单门店的 org（不是品牌）。member-service 落在 GrantedReward.redeemedStoreId 上，
+   * 那是「品牌发的券在加盟店核销该报销多少」的**唯一**依据，而且不可回填。
+   */
+  storeId?: string;
 }): Promise<void> {
   if (!INTERNAL_SERVICE_KEY) {
     logger.warn('[MemberClient] INTERNAL_SERVICE_KEY 未配置，跳过奖励标记');
@@ -125,7 +130,11 @@ export async function useGrantedReward(params: {
   const res = await fetch(`${MEMBER_SERVICE_URL}/internal/rewards/use`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-service-api-key': INTERNAL_SERVICE_KEY },
-    body: JSON.stringify({ grantedRewardId: params.grantedRewardId, orderId: params.orderId }),
+    body: JSON.stringify({
+      grantedRewardId: params.grantedRewardId,
+      orderId: params.orderId,
+      storeId: params.storeId,
+    }),
   });
 
   /*
