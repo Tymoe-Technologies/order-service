@@ -2958,6 +2958,12 @@ class OrderService {
                 optionName: true,
                 unitPrice: true,
                 quantity: true,
+                /*
+                  选项名（optionName）是下单那刻定死的字符串，顾客切界面语言
+                  它不会跟着变。要按当前语言重挑就得有 id 回查目录 ——
+                  顾客端「我的订单」正是这么做的（见 lib/cartDisplay 的 NameResolver）。
+                */
+                modifierOptionId: true,
               },
             },
           },
