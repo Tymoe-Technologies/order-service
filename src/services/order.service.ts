@@ -2865,6 +2865,13 @@ class OrderService {
               quantity: true,
               unitPrice: true,
               totalPrice: true,
+              /*
+                套餐子项快照。**这是 select 不是 include**，漏一个字段就是
+                前端那边静默少一块 —— 顾客的「我的订单」里套餐只剩一个名字，
+                看不出自己买了什么（见 OrderItem.comboSelections）。
+              */
+              comboId: true,
+              comboSelections: true,
             },
           },
         },
@@ -2941,6 +2948,9 @@ class OrderService {
             discountAmount: true,
             discountReason: true,
             specialNotes: true,
+            // 套餐子项快照。同列表接口那条说明：select 漏了就前端静默少一块
+            comboId: true,
+            comboSelections: true,
             orderItemModifiers: {
               select: {
                 id: true,
