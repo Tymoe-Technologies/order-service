@@ -19,9 +19,10 @@ const INTERNAL_SERVICE_KEY = process.env.INTERNAL_SERVICE_KEY || '';
 /**
  * 下单的是**哪家店**。
  *
- * 积分流水的 organizationId 存的是会员归属的主店（上面 resolveMemberOrgId
- * 把分店换成了 parentOrgId），所以它答不了「这笔在哪消费的」——
- * 会员面板要显示门店就得单独带。
+ * 积分流水的 organizationId 存的是会员归属的主店（member-service 收到请求后
+ * 把分店换成品牌 org，见它的 services/organization.service），
+ * 所以它答不了「这笔在哪消费的」—— 会员面板要显示门店就得单独带。
+ * 这个 storeId 也是跨组织对账（品牌 → 门店的积分兑付）的事实依据。
  *
  * 名字取不到不挡积分：流水少一个门店名，比少一笔积分轻得多。
  * organizationService 有 5 分钟缓存，这里不会给每单加一次 HTTP。
@@ -136,8 +137,16 @@ export function registerMemberHandler(bus: IEventBus): void {
       await useGrantedReward({ grantedRewardId: e.grantedRewardId, orderId: e.orderId });
     }
 
-    // 会员体系归属主店：分店下单时用 parentOrgId 调 member-service
-    const memberOrgId = await organizationService.resolveMemberOrgId(e.tenantId);
+    /*
+      直接传**下单门店**的 tenantId —— 会员池归品牌那一步的解析
+      收在 member-service 里做了（见它的 services/organization.service）。
+
+      原来这里自己调 resolveMemberOrgId 先翻成主店。删掉的理由是那套解析
+      散在调用方就会出现两套口径：POS 查/绑会员走的是自己的门店 org，
+      而这里传主店 org —— 收银员绑的会员和积分入账的会员不在一个池子里。
+      现在两条路都传门店 org，由 member-service 统一翻译。
+    */
+    const memberOrgId = e.tenantId;
 
     /*
       按实付金额累积积分：税前小计 − 耗材 − 普通折扣 − 渠道折扣。
@@ -205,8 +214,8 @@ export function registerMemberHandler(bus: IEventBus): void {
   bus.on('POINTS_REVERSE_REQUESTED', async function member_POINTS_REVERSE_REQUESTED(event) {
     const e = event as PointsReverseRequestedEvent;
     if (!e.memberId) return;
-    const memberOrgId = await organizationService.resolveMemberOrgId(e.tenantId);
-    await reverseOrderPoints({ organizationId: memberOrgId, orderId: e.orderId });
+    // 传门店 org，解析在 member-service 那边做（见上面 ORDER_PAID 那支的说明）
+    await reverseOrderPoints({ organizationId: e.tenantId, orderId: e.orderId });
   });
 
   /*
@@ -238,8 +247,8 @@ export function registerMemberHandler(bus: IEventBus): void {
       await useGrantedReward({ grantedRewardId: e.grantedRewardId, orderId: e.orderId });
     }
 
-    // 会员体系归属主店：分店下单时用 parentOrgId 调 member-service
-    const memberOrgId = await organizationService.resolveMemberOrgId(e.tenantId);
+    // 同上：传门店 org，解析在 member-service 那边做
+    const memberOrgId = e.tenantId;
 
     // 口径同 ORDER_PAID 那支：税前小计 − 耗材 − 普通折扣 − 渠道折扣
     const earnBase = Math.max(0,

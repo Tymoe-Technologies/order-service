@@ -233,25 +233,13 @@ class OrganizationService {
   }
 
   /**
-   * 解析"会员/积分体系所属主店 orgId"
-   * 分店/加盟店服从主店：BRANCH/FRANCHISE 返回 parentOrgId，MAIN 返回自身
-   * 任何失败都返回原 orgId（降级保底，不抛错）
-   */
-  async resolveMemberOrgId(orgId: string): Promise<string> {
-    try {
-      const info = await this.getOrganization(orgId);
-      if (info?.parentOrgId) return info.parentOrgId;
-      return orgId;
-    } catch {
-      return orgId;
-    }
-  }
-
-  /**
    * 这个 org 的**主店**（品牌）。分店返回 parentOrgId，主店返回自己。
    *
-   * 和 resolveMemberOrgId 同一套解析，但用途不同所以分开命名 ——
-   * 那个答的是「会员算在谁名下」，这个答的是「品牌级配置挂在谁身上」。
+   * ⚠️ 这个答的是「品牌级**配置**挂在谁身上」。
+   * 「会员算在谁名下」那份解析原来也在这个文件里（resolveMemberOrgId），
+   * 已经删掉 —— 会员池的解析收到 member-service 内部去做了，
+   * 散在调用方就会出现两套口径（见 events/handlers/member.handler 的说明）。
+   *
    * 解析失败时退回自己：宁可当成独立店（各配各的），也不要把配置写串。
    */
   async resolveMainOrgId(orgId: string): Promise<string> {
