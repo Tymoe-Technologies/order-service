@@ -1062,6 +1062,8 @@ class OrderService {
                 orderId: created.id,
                 orderNumber: created.orderNumber,
                 grantedRewardId: _useGrId,
+                // 报销金额。口径同 notifyLoyaltyDiscount：挂了券就整笔算券的让利
+                discountAmount: created.discountAmount ?? undefined,
               });
             }
           }

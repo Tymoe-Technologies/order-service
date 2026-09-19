@@ -121,6 +121,16 @@ export async function useGrantedReward(params: {
    * 那是「品牌发的券在加盟店核销该报销多少」的**唯一**依据，而且不可回填。
    */
   storeId?: string;
+  /**
+   * 这张券实际让了多少钱（分）—— 报销金额。
+   *
+   * 口径和 notifyLoyaltyDiscount 完全一致：订单上挂了券，整笔 discountAmount
+   * 都算券的让利。两边用同一个数，账本和对账单才对得上。
+   *
+   * 百分比券的让利只有**核销那一刻**算得出（取决于订单金额），
+   * member-service 事后反查不到，所以这个值不可回填。
+   */
+  redeemedAmount?: number;
 }): Promise<void> {
   if (!INTERNAL_SERVICE_KEY) {
     logger.warn('[MemberClient] INTERNAL_SERVICE_KEY 未配置，跳过奖励标记');
@@ -134,6 +144,7 @@ export async function useGrantedReward(params: {
       grantedRewardId: params.grantedRewardId,
       orderId: params.orderId,
       storeId: params.storeId,
+      redeemedAmount: params.redeemedAmount,
     }),
   });
 

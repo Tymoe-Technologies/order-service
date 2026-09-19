@@ -134,7 +134,13 @@ export function registerMemberHandler(bus: IEventBus): void {
     // **不 catch**：失败要让 outbox 看见，退避重试直到核销成功。
     // 吞掉的话这张券就永远留在 ACTIVE，能被反复使用。
     if (e.grantedRewardId) {
-      await useGrantedReward({ grantedRewardId: e.grantedRewardId, orderId: e.orderId, storeId: e.tenantId });
+      await useGrantedReward({
+        grantedRewardId: e.grantedRewardId,
+        orderId: e.orderId,
+        storeId: e.tenantId,
+        // 报销金额。口径同 notifyLoyaltyDiscount：挂了券就整笔算券的让利
+        redeemedAmount: e.discountAmount ?? undefined,
+      });
     }
 
     /*
@@ -187,7 +193,13 @@ export function registerMemberHandler(bus: IEventBus): void {
   bus.on('COUPON_USE_REQUESTED', async function member_COUPON_USE_REQUESTED(event) {
     const e = event as CouponUseRequestedEvent;
     if (!e.grantedRewardId) return;
-    await useGrantedReward({ grantedRewardId: e.grantedRewardId, orderId: e.orderId, storeId: e.tenantId });
+    await useGrantedReward({
+        grantedRewardId: e.grantedRewardId,
+        orderId: e.orderId,
+        storeId: e.tenantId,
+        // 报销金额。口径同 notifyLoyaltyDiscount：挂了券就整笔算券的让利
+        redeemedAmount: e.discountAmount ?? undefined,
+      });
   });
 
   /*
@@ -244,7 +256,13 @@ export function registerMemberHandler(bus: IEventBus): void {
     // 券核销放在积分之前，理由同 ORDER_PAID 那支
     // 不 catch，理由同 ORDER_PAID 那支：要让 outbox 重试
     if (e.grantedRewardId) {
-      await useGrantedReward({ grantedRewardId: e.grantedRewardId, orderId: e.orderId, storeId: e.tenantId });
+      await useGrantedReward({
+        grantedRewardId: e.grantedRewardId,
+        orderId: e.orderId,
+        storeId: e.tenantId,
+        // 报销金额。口径同 notifyLoyaltyDiscount：挂了券就整笔算券的让利
+        redeemedAmount: e.discountAmount ?? undefined,
+      });
     }
 
     // 同上：传门店 org，解析在 member-service 那边做
