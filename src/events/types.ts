@@ -99,6 +99,8 @@ export interface OrderCompletedEvent extends BaseEvent {
 export interface CouponUseRequestedEvent extends BaseEvent {
   type: 'COUPON_USE_REQUESTED';
   grantedRewardId: string;
+  /** 券实际让利（分）。member-service 落在 redeemedAmount 上，跨组织报销要用 */
+  discountAmount?: number;
 }
 
 /**
