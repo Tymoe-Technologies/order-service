@@ -2553,6 +2553,51 @@ class OrderService {
         data: prismaUpdateData,
       });
 
+      /*
+        ★ 全额退款也要退券、冲正积分 —— 和 cancelOrder 走同一套发件箱。
+
+        原来这两件事**只在 `cancelOrder()` 里做**，而那个函数开头就是
+        `if (status === 'COMPLETED') throw '已完成的订单无法取消'`。
+        POS 现金单**下单即 COMPLETED**，于是走的是这条路（finance 退款
+        → notifyOrderPaymentStatus('REFUNDED') → 这里），两个事件一个都没发：
+        钱退了，券没退回去，积分也没收回 —— 同一张券能反复用，
+        积分能靠「下单再退款」无限刷。
+
+        只有**全额**退款会走到这里（finance 侧 isOrderFullyRefunded 判断，
+        部分退款是 PARTIALLY_REFUNDED，不通知 order-service 改状态）。
+        口径和 cancelOrder 一致：部分退款不退券，那笔交易还在。
+
+        重复投递是安全的：member-service 两个端点都幂等
+        （/restore 对已 ACTIVE 返回 200，/reverse 有 idempotencyKey）。
+      */
+      if (data.paymentStatus === 'REFUNDED') {
+        const grId = parseGrantedRewardId(order.discountReason);
+        if (grId) {
+          await enqueueEvent(tx, {
+            type: 'COUPON_RESTORE_REQUESTED',
+            eventId: uuidv4(),
+            timestamp: new Date(),
+            tenantId: data.tenantId,
+            orderId: data.orderId,
+            orderNumber: order.orderNumber,
+            grantedRewardId: grId,
+          });
+        }
+
+        // 条件同 cancelOrder：挂账单不计积分，发了也是空跑
+        if (order.memberId && order.paymentMethod !== 'ACCOUNT') {
+          await enqueueEvent(tx, {
+            type: 'POINTS_REVERSE_REQUESTED',
+            eventId: uuidv4(),
+            timestamp: new Date(),
+            tenantId: data.tenantId,
+            orderId: data.orderId,
+            orderNumber: order.orderNumber,
+            memberId: order.memberId,
+          });
+        }
+      }
+
       // 6. 查询关联快照（事务内查询保证一致性，供事务外事件使用）
       let snapshot: any = null;
       if (data.paymentStatus === 'PAID') {
