@@ -113,8 +113,28 @@ test('★ 两条建单路径都做了叠加校验', () => {
   // POS 走 order.service，顾客端走 checkout-snapshot。漏一条就是那条路能绕过
   for (const [name, src] of [['order.service', ORDER_SERVICE], ['checkout-snapshot', SNAPSHOT]] as const) {
     assert.match(src, /checkDiscountStacking\(/, `${name} 没做叠加校验`);
-    assert.match(src, /DISCOUNT_NOT_STACKABLE/, `${name} 冲突时没拒绝`);
   }
+});
+
+test('★ 收了钱的单绝不因为叠加冲突被拒 —— 只有报价阶段才拒', () => {
+  /*
+    建单时**钱已经收了**：POS 是先收款后建单，离线单更是隔了几小时才补传。
+    在那里 400 的后果是订单永远落不了库，而收据打了、钱进抽屉了。
+    实测过：离线队列补传撞上这个 400，那一单卡在队列里无限重试
+    （它对 4xx 不做区分）。
+
+    checkout-snapshot 是**报价**阶段，还没收钱，拒了顾客改一下重下就行。
+  */
+  const i = ORDER_SERVICE.indexOf('const conflict = checkDiscountStacking(discountLines)');
+  assert.ok(i > -1, '找不到建单时的叠加判定');
+  const block = ORDER_SERVICE.slice(i, i + 700);
+  assert.doesNotMatch(block, /throw new AppError/, '建单时不能拒单 —— 钱已经收了');
+  assert.match(block, /logger\.warn/, '至少要记下来，否则事后查不出这单为什么折扣超了');
+
+  // 报价那条路反过来，必须拒
+  assert.match(SNAPSHOT, /DISCOUNT_NOT_STACKABLE/);
+  const j = SNAPSHOT.indexOf('const stackingConflict = checkDiscountStacking');
+  assert.match(SNAPSHOT.slice(j, j + 900), /throw new AppError/);
 });
 
 test('★ 渠道折扣要并进判定 —— POS 算不出它', () => {
