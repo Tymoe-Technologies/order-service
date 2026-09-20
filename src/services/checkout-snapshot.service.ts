@@ -1,4 +1,6 @@
 import { PrismaClient } from '../../node_modules/.prisma/client-order'
+import { checkDiscountStacking } from '../utils/discountStacking'
+import { AppError } from '../middleware/errorHandler'
 import axios from 'axios'
 import { isTypeAllowed } from './fulfillment-option.service'
 import {
@@ -163,10 +165,10 @@ async function resolveRewardDiscount(
   consumerId: string,   // Consumer.id（非 Member.id）
   subtotalCents: number,
   verifiedItems: Array<{ itemId: string; categoryId: string | null; unitPrice: number; basePrice: number; quantity: number }>
-): Promise<{ discountCents: number }> {
+): Promise<{ discountCents: number; allowStacking: boolean }> {
   if (!INTERNAL_SERVICE_KEY) {
     console.warn('[CheckoutSnapshot] INTERNAL_SERVICE_KEY 未配置，跳过奖励校验')
-    return { discountCents: 0 }
+    return { discountCents: 0, allowStacking: true }
   }
 
   try {
@@ -179,14 +181,14 @@ async function resolveRewardDiscount(
     console.log('[CheckoutSnapshot] 奖励校验响应:', res.status, JSON.stringify(body))
     if (!res.ok) {
       console.warn('[CheckoutSnapshot] 奖励校验失败:', res.status)
-      return { discountCents: 0 }
+      return { discountCents: 0, allowStacking: true }
     }
 
     const rewardData = body?.data
 
     if (!rewardData?.valid || !rewardData?.reward) {
       console.warn('[CheckoutSnapshot] 奖励无效:', rewardData)
-      return { discountCents: 0 }
+      return { discountCents: 0, allowStacking: true }
     }
 
     const reward = rewardData.reward
@@ -234,10 +236,12 @@ async function resolveRewardDiscount(
     }
 
     console.log('[CheckoutSnapshot] 计算折扣(分):', discountCents)
-    return { discountCents }
+    // allowStacking 是发券时的快照（券发出去时说可叠加，商家后来改成互斥，
+    // 已发出的不该跟着变）。默认 true —— 拿不到规则时不该无故拦下单
+    return { discountCents, allowStacking: reward.allowStacking !== false }
   } catch (err) {
     console.error('[CheckoutSnapshot] 奖励校验异常，跳过折扣:', err)
-    return { discountCents: 0 }
+    return { discountCents: 0, allowStacking: true }
   }
 }
 
@@ -771,14 +775,16 @@ export async function createCheckoutSnapshot(
 
     // 3.5 积分奖励折扣（Consumer 携带 grantedRewardId 时校验并计算折扣）
     let discountAmount = 0
+    let rewardAllowsStacking = true
     if (data.grantedRewardId && data.consumerId) {
-      const { discountCents } = await resolveRewardDiscount(
+      const r = await resolveRewardDiscount(
         data.grantedRewardId,
         data.consumerId,
         subtotal,
         verifiedItems
       )
-      discountAmount = Math.min(discountCents, subtotal)  // 折扣不超过小计
+      discountAmount = Math.min(r.discountCents, subtotal)  // 折扣不超过小计
+      rewardAllowsStacking = r.allowStacking
     }
 
     // 3.6 渠道折扣（复用步骤0已查到的 channelConfig，防止前端篡改金额）
@@ -797,6 +803,28 @@ export async function createCheckoutSnapshot(
           channelDiscountAmount = Math.min(discount.value, subtotal)
         }
       }
+    }
+
+    /*
+      ★ 叠加校验。三种折扣到这一步才凑齐，这是唯一能做判定的地方。
+
+      顾客端没有手动折扣，所以这条路上唯一的叠加是「会员券 + 渠道折扣」。
+      两个数都是服务端自己算的（都不信前端），所以判定用的是真值。
+
+      拒绝而不是静默丢弃其中一项：顾客在结账页看到的金额是带两项优惠的，
+      服务端悄悄少给一项、结果金额对不上，比报错更糟。
+    */
+    const stackingConflict = checkDiscountStacking([
+      { source: 'LOYALTY', amount: discountAmount, exclusive: !rewardAllowsStacking,
+        ref: data.grantedRewardId ? `GrantedReward:${data.grantedRewardId}` : undefined },
+      { source: 'CHANNEL', amount: channelDiscountAmount, exclusive: false, ref: channelConfigId },
+    ])
+    if (stackingConflict) {
+      throw new AppError(
+        400,
+        'DISCOUNT_NOT_STACKABLE',
+        '该优惠券不可与其他优惠同时使用，请取消其中一项',
+      )
     }
 
     // 折后商品小计（用于税费计算）
