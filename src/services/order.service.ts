@@ -828,16 +828,33 @@ class OrderService {
           : []),
       ];
 
+      /*
+        ★ 冲突只记录，**绝不拒单**。
+
+        建单这一步**钱已经收了** —— POS 是先收款后建单，离线单更是隔了几小时
+        才补传。在这里 400 的后果是订单永远落不了库，而收据已经打了、
+        钱已经进抽屉了。实测过：离线队列补传时撞上这个 400，
+        那一单卡在队列里无限重试（它对 4xx 不做区分）。
+
+        这条原则本仓已经写过好几遍（见 validators/order.validator 里
+        taxLines / supplies / discountLines 的注释）：**POS 是可信端，
+        在收了钱的单上因为校验太严拒单，比存进一行怪数据严重得多。**
+
+        拦截的正确位置是**收款之前**：
+          · POS   —— 选了不可叠加的券就禁掉手动折扣（CheckoutScreen 里已做）
+          · 顾客端 —— checkout-snapshot 那条路仍然拒绝，那是**报价**阶段，
+                      还没收钱，拒了顾客改一下重下就行
+
+        这里记 warn + 照常落库，明细在 discountLines 上原样保留，
+        事后对账查得出来。
+      */
       const conflict = checkDiscountStacking(discountLines);
       if (conflict) {
-        logger.warn('[Order] 优惠不可叠加，拒绝建单', {
-          tenantId, exclusive: conflict.exclusiveRef, conflictsWith: conflict.conflictingSources,
+        logger.warn('[Order] 优惠不可叠加，但订单已收款，照常落库', {
+          tenantId,
+          exclusive: conflict.exclusiveRef,
+          conflictsWith: conflict.conflictingSources,
         });
-        throw new AppError(
-          400,
-          'DISCOUNT_NOT_STACKABLE',
-          '该优惠券不可与其他优惠同时使用，请取消其中一项',
-        );
       }
 
       // 计算总金额: 小计（已扣商品折扣）+ 各项费用 - 整单折扣 - 渠道折扣
