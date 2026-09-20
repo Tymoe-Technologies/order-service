@@ -96,3 +96,50 @@ test('★ 新增优惠类型不用改判定', () => {
 test('合计包含 0 行，口径统一走一个函数', () => {
   assert.equal(totalDiscountOf([coupon(500, true), manual(0), channel(100)]), 600);
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 下面几条是源码级的，守的是「明细有没有真的被用起来」——
+// 纯函数写得再对，没接到建单链路上也是白搭（这套字段上一版就是这么废掉的：
+// Portal 能配、数据库能存、没有任何地方读）。
+// ─────────────────────────────────────────────────────────────────────────────
+
+import { readFileSync } from 'fs';
+import { join } from 'path';
+
+const ORDER_SERVICE = readFileSync(join(__dirname, '..', 'services', 'order.service.ts'), 'utf8');
+const SNAPSHOT = readFileSync(join(__dirname, '..', 'services', 'checkout-snapshot.service.ts'), 'utf8');
+
+test('★ 两条建单路径都做了叠加校验', () => {
+  // POS 走 order.service，顾客端走 checkout-snapshot。漏一条就是那条路能绕过
+  for (const [name, src] of [['order.service', ORDER_SERVICE], ['checkout-snapshot', SNAPSHOT]] as const) {
+    assert.match(src, /checkDiscountStacking\(/, `${name} 没做叠加校验`);
+    assert.match(src, /DISCOUNT_NOT_STACKABLE/, `${name} 冲突时没拒绝`);
+  }
+});
+
+test('★ 渠道折扣要并进判定 —— POS 算不出它', () => {
+  /*
+    渠道折扣是服务端自己算的（防篡改），POS 那边的实时提示天然漏这一项。
+    建单时不补进去的话，「券 + 渠道折扣」这个组合永远拦不住。
+  */
+  const i = ORDER_SERVICE.indexOf('const discountLines = [');
+  assert.ok(i > -1, '找不到明细汇总处');
+  const block = ORDER_SERVICE.slice(i, i + 800);
+  assert.match(block, /source: 'CHANNEL'/);
+  assert.match(block, /source: 'MANUAL_ITEM'/, '单品折扣也要补 —— POS 只发整单级两项');
+});
+
+test('★ 账本科目按行分发，不是按 discountType 猜', () => {
+  /*
+    这是这次顺带修掉的现存 bug：discountType 在混合折扣时只标「优先级最高
+    的那类」，于是券 $5 + 手动 $2 的单整笔 $7 都记进 6300 Loyalty，
+    $2 记在错的科目上。
+  */
+  const i = ORDER_SERVICE.indexOf('折扣账本分录路由');
+  assert.ok(i > -1);
+  const block = ORDER_SERVICE.slice(i, i + 2000);
+  assert.match(block, /for \(const line of discountLines\)/, '没有按行分发');
+  assert.match(block, /line\.source === 'LOYALTY'/);
+  // 存量订单没有明细，老路要留着
+  assert.match(block, /\} else if \(discountAmount > 0\)/, '存量订单的兜底路径被删了');
+});
