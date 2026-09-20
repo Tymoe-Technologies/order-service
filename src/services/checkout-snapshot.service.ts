@@ -797,10 +797,19 @@ export async function createCheckoutSnapshot(
       const rules = channelConfig.checkoutRules as any
       const discount = rules?.orderDiscount
       if (discount?.enabled) {
+        /*
+          ★ 基数是**券折扣之后**的金额（瀑布口径，见 POS 的
+          utils/discountWaterfall）。渠道折扣是瀑布的最后一层。
+
+          原来这里用的是 subtotal（原价）—— 而 POS 那条路一直是按券后算的
+          （见 CheckoutScreen 里 resultPreChannel 那段）。**同一张单走两条路
+          算出的渠道折扣不一样**，谁先下单谁说了算。
+        */
+        const afterReward = Math.max(0, subtotal - discountAmount)
         if (discount.type === 'PERCENTAGE') {
-          channelDiscountAmount = Math.round(subtotal * (discount.value / 100))
+          channelDiscountAmount = Math.round(afterReward * (discount.value / 100))
         } else if (discount.type === 'FIXED') {
-          channelDiscountAmount = Math.min(discount.value, subtotal)
+          channelDiscountAmount = Math.min(discount.value, afterReward)
         }
       }
     }
