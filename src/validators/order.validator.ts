@@ -145,6 +145,24 @@ export const createOrderSchema = Joi.object({
   */
   deviceId: Joi.string().max(255).optional(),
   discountAmount: Joi.number().integer().min(0).default(0),
+  /*
+    折扣按来源拆开的明细。**Joi 默认拒绝未知字段** —— POS 一旦开始发，
+    这里不放行整个请求就 400，收了钱的单落不了库（taxLines 和 supplies
+    都踩过这个坑）。
+
+    金额不设上限、source 不用 valid() 收紧枚举：POS 是可信端，
+    而在已经收了钱的单上因为校验太严返回 400，后果比存进一行怪数据严重得多。
+    真有异常值，落库之后还能查还能改；订单丢了就是丢了。
+  */
+  discountLines: Joi.array().items(
+    Joi.object({
+      source: Joi.string().max(20).required(),
+      amount: Joi.number().integer().required(),
+      exclusive: Joi.boolean().required(),
+      ref: Joi.string().max(120).optional().allow(null, ''),
+      reason: Joi.string().max(255).optional().allow(null, ''),
+    }),
+  ).optional(),
   serviceFee: Joi.number().integer().min(0).default(0),
   deliveryFee: Joi.number().integer().min(0).default(0),
   platformFee: Joi.number().integer().min(0).default(0),

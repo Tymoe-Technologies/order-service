@@ -1,4 +1,5 @@
 import prisma from '../utils/prisma';
+import { checkDiscountStacking } from '../utils/discountStacking';
 import { pickupNumberConfigService } from './print-setting.service';
 import { IN_STORE_PICKUP_TYPES } from './fulfillment-option.service';
 import { AppError } from '../middleware/errorHandler';
@@ -229,6 +230,20 @@ interface CreateOrderData {
    */
   taxLines?: Array<{ name: string; rate: number; amount: number }>;
   discountAmount?: number;
+  /**
+   * 折扣按来源拆开的明细。POS 一直算得出（券 / 整单手动 / 单品手动分得很清），
+   * 原来没发上来 —— 于是 order-service 只能靠 discountType 猜，
+   * 混合折扣时**财务科目必然记错一半**，叠加校验也无从做起。
+   *
+   * 不传就是没有明细（存量订单、或者根本没打折）。
+   */
+  discountLines?: Array<{
+    source: 'LOYALTY' | 'MANUAL_ORDER' | 'MANUAL_ITEM' | 'CHANNEL' | 'PROMOTION';
+    amount: number;
+    exclusive: boolean;
+    ref?: string;
+    reason?: string;
+  }>;
   serviceFee?: number;
   deliveryFee?: number;
   platformFee?: number;
@@ -788,6 +803,43 @@ class OrderService {
         }
       }
 
+      /*
+        ★ 叠加校验。渠道折扣是服务端自己算的，所以要在这里并进 POS 发来的
+        明细里一起判 —— POS 那边算不出渠道折扣，它的实时提示天然漏这一项。
+
+        POS 发来的 exclusive 标志来自券上的快照，理论上可以被篡改；
+        但 POS 是自家设备、店员操作，不是公开 API，这里不再回查 member-service
+        （那会给每一单加一次同步 HTTP）。真要收紧就在这里加一次 validate 调用。
+      */
+      /*
+        POS 只发整单级两项（券 / 整单手动），另外两项在这边补：
+          · MANUAL_ITEM —— 单品折扣已经在每个 item 上，这里汇总成一行
+          · CHANNEL     —— 服务端自己算的，POS 算不出来
+        两边各算各的会漂移，所以谁算得出谁补。
+      */
+      const discountLines = [
+        ...(data.discountLines ?? []),
+        ...(itemDiscountTotal > 0
+          ? [{ source: 'MANUAL_ITEM' as const, amount: Math.round(itemDiscountTotal), exclusive: false }]
+          : []),
+        ...(channelDiscountAmount > 0
+          ? [{ source: 'CHANNEL' as const, amount: Math.round(channelDiscountAmount), exclusive: false,
+              ref: channelConfig?.id }]
+          : []),
+      ];
+
+      const conflict = checkDiscountStacking(discountLines);
+      if (conflict) {
+        logger.warn('[Order] 优惠不可叠加，拒绝建单', {
+          tenantId, exclusive: conflict.exclusiveRef, conflictsWith: conflict.conflictingSources,
+        });
+        throw new AppError(
+          400,
+          'DISCOUNT_NOT_STACKABLE',
+          '该优惠券不可与其他优惠同时使用，请取消其中一项',
+        );
+      }
+
       // 计算总金额: 小计（已扣商品折扣）+ 各项费用 - 整单折扣 - 渠道折扣
       const totalAmount = Math.max(
         0,
@@ -966,6 +1018,9 @@ class OrderService {
               taxLines: (sanitizeTaxLines(data.taxLines, Math.round(taxAmount)) ?? undefined) as any,
               // 订单总折扣 = 商品折扣合计 + 整单折扣
               discountAmount: Math.round(itemDiscountTotal + orderLevelDiscount),
+              /* 同 taxLines：`?? undefined` 而不是 null，Prisma 的 Json 字段
+                 不接受 JS null；`as any` 是因为 InputJsonValue 不收具名接口数组 */
+              discountLines: (discountLines.length ? discountLines : undefined) as any,
               channelDiscountAmount: Math.round(channelDiscountAmount),
               serviceFee: Math.round(serviceFee),
               deliveryFee: Math.round(deliveryFee),
@@ -2636,6 +2691,8 @@ class OrderService {
           discountReason: updatedOrder.discountReason ?? null,
           discountType: updatedOrder.discountType ?? null,
           discountAmount: updatedOrder.discountAmount ?? 0,
+          // 折扣明细：账本科目分发按行走，见下面 notifyLoyaltyDiscount 那段
+          discountLines: (updatedOrder.discountLines as any) ?? null,
           channelDiscountAmount: updatedOrder.channelDiscountAmount ?? 0,
           paymentMethod: updatedOrder.paymentMethod ?? null,
           // 耗材不计积分（也不参与折扣）。事务内查一次，给下面两个事件共用
@@ -2718,14 +2775,46 @@ class OrderService {
         });
       }
 
-      // 统一折扣账本分录路由:不管是会员券折扣、员工手动整单/单品折扣还是 comp,
-      // 只要 discountAmount > 0 就要进账本(分别走 6300 LoyaltyDiscount / 6310 ManualDiscount 科目)。
+      /*
+        折扣账本分录路由：6300 LoyaltyDiscount / 6310 ManualDiscount。
+
+        ★ 有明细就**按行分发**。原来只能靠 discountType 标的那一个类型走，
+        而那个标签在混合折扣时只标「优先级最高的那类」（见 POS 的
+        CheckoutScreen 注释）—— 于是券 $5 + 手动 $2 的单，整笔 $7 都记进了
+        6300，$2 记在错的科目上。这不是叠加校验的副产品，是现在就在错的账。
+
+        没有明细的走老路（存量订单、以及还没发明细的调用方）。
+      */
+      const discountLines = (result as any)._meta.discountLines as
+        Array<{ source: string; amount: number; reason?: string }> | null;
       const discountAmount = snapshotPricing?.discountAmount
         || (result as any)._meta.discountAmount
         || 0;
       const discountType: string | null = (result as any)._meta.discountType ?? null;
       const discountReason: string | null = (result as any)._meta.discountReason ?? null;
-      if (discountAmount > 0) {
+
+      if (discountLines?.length) {
+        for (const line of discountLines) {
+          if (line.amount <= 0) continue;
+          // 渠道折扣不进折扣科目：它是渠道的定价规则，finance 那边走别的账
+          if (line.source === 'CHANNEL') continue;
+          if (line.source === 'LOYALTY') {
+            notifyLoyaltyDiscount({
+              tenantId: data.tenantId,
+              orderId: data.orderId,
+              discountAmount: line.amount,
+              grantedRewardId: grantedRewardId ?? undefined,
+            }).catch(() => {});
+          } else {
+            notifyManualDiscount({
+              tenantId: data.tenantId,
+              orderId: data.orderId,
+              discountAmount: line.amount,
+              reason: line.reason ?? discountReason ?? undefined,
+            }).catch(() => {});
+          }
+        }
+      } else if (discountAmount > 0) {
         if (discountType === 'LOYALTY_REDEMPTION' || grantedRewardId) {
           notifyLoyaltyDiscount({
             tenantId: data.tenantId,
